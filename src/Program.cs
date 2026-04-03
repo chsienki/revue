@@ -1,10 +1,10 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.FileProviders;
 using Revue;
 
 // ── Repo root ────────────────────────────────────────────────────────────────
@@ -14,8 +14,11 @@ GitHelper.ResolveDefaultBase(repoRoot); // validate git works
 EnsureGitignore(repoRoot);
 var defaultBase = GitHelper.ResolveDefaultBase(repoRoot);
 
-// ── Static dir ───────────────────────────────────────────────────────────────
-var staticDir = FindStaticDir();
+// ── Static content ───────────────────────────────────────────────────────────
+// Serve from disk when available (dev), fall back to embedded resource (published)
+var staticDir = TryFindStaticDir();
+if (staticDir != null)
+    Console.WriteLine($"static →  {staticDir} (dev mode)");
 
 // ── Port ─────────────────────────────────────────────────────────────────────
 var port = FindFreePort(7878);
@@ -36,17 +39,16 @@ var jsonOpts = new JsonSerializerOptions
 
 var app = builder.Build();
 app.UseCors();
-app.UseStaticFiles(new StaticFileOptions
-{
-    FileProvider = new PhysicalFileProvider(staticDir),
-    RequestPath = "/static",
-});
 
 // ── Routes ───────────────────────────────────────────────────────────────────
 
 // GET /
-app.MapGet("/", () => Results.File(
-    Path.Combine(staticDir, "index.html"), "text/html"));
+app.MapGet("/", () =>
+{
+    if (staticDir != null)
+        return Results.File(Path.Combine(staticDir, "index.html"), "text/html");
+    return Results.Bytes(LoadEmbeddedResource("index.html"), "text/html");
+});
 
 // GET /api/config
 app.MapGet("/api/config", () => Results.Json(new
@@ -86,37 +88,71 @@ app.MapGet("/api/log", (string? @base, string? head) =>
                              var sp = l.IndexOf(' ');
                              return new { hash = l[..sp], message = l[(sp + 1)..] };
                          }).ToList();
+
+        if (head == "HEAD" && GitHelper.HasWorkingTreeChanges(repoRoot))
+            commits.Insert(0, new { hash = "~working~", message = "Working tree changes" });
+
         return Results.Json(commits, jsonOpts);
     }
     catch (Exception ex) { return Results.Problem(ex.Message); }
 });
 
-// GET /api/diff?base=X&head=Y
-app.MapGet("/api/diff", (string? @base, string? head) =>
+// GET /api/diff?base=X&head=Y&ignoreWhitespace=true
+app.MapGet("/api/diff", (string? @base, string? head, bool? ignoreWhitespace) =>
 {
     @base ??= defaultBase;
     head ??= "HEAD";
+    var wsFlag = ignoreWhitespace == true ? "-w" : null;
     try
     {
-        var raw = GitHelper.RunGit(
-            ["diff", "--unified=5", $"{@base}...{head}"], repoRoot);
+        string raw;
+        if (head == "HEAD")
+        {
+            var mergeBase = GitHelper.GetMergeBase(@base, "HEAD", repoRoot);
+            var args = new List<string> { "diff", "--unified=5" };
+            if (wsFlag != null) args.Add(wsFlag);
+            args.Add(mergeBase);
+            raw = GitHelper.RunGit([.. args], repoRoot);
+        }
+        else
+        {
+            var args = new List<string> { "diff", "--unified=5" };
+            if (wsFlag != null) args.Add(wsFlag);
+            args.Add($"{@base}...{head}");
+            raw = GitHelper.RunGit([.. args], repoRoot);
+        }
         var files = GitHelper.ParseDiff(raw);
         return Results.Json(files, jsonOpts);
     }
     catch (Exception ex) { return Results.Problem(ex.Message); }
 });
 
-// GET /api/file-diff?base=X&head=Y&file=F
-app.MapGet("/api/file-diff", (string? @base, string? head, string? file) =>
+// GET /api/file-diff?base=X&head=Y&file=F&ignoreWhitespace=true
+app.MapGet("/api/file-diff", (string? @base, string? head, string? file, bool? ignoreWhitespace) =>
 {
     @base ??= defaultBase;
     head ??= "HEAD";
     if (string.IsNullOrWhiteSpace(file))
         return Results.BadRequest("file parameter required");
+    var wsFlag = ignoreWhitespace == true ? "-w" : null;
     try
     {
-        var raw = GitHelper.RunGit(
-            ["diff", "--unified=5", $"{@base}...{head}", "--", file], repoRoot);
+        string raw;
+        if (head == "HEAD")
+        {
+            var mergeBase = GitHelper.GetMergeBase(@base, "HEAD", repoRoot);
+            var args = new List<string> { "diff", "--unified=5" };
+            if (wsFlag != null) args.Add(wsFlag);
+            args.AddRange([mergeBase, "--", file]);
+            raw = GitHelper.RunGit([.. args], repoRoot);
+        }
+        else
+        {
+            var args = new List<string> { "diff", "--unified=5" };
+            if (wsFlag != null) args.Add(wsFlag);
+            args.AddRange([$"{@base}...{head}", "--", file]);
+            raw = GitHelper.RunGit([.. args], repoRoot);
+        }
         var files = GitHelper.ParseDiff(raw);
         return Results.Json(files.FirstOrDefault(), jsonOpts);
     }
@@ -242,35 +278,27 @@ static int FindFreePort(int preferred)
     throw new InvalidOperationException("No free port found");
 }
 
-static string FindStaticDir()
+static byte[] LoadEmbeddedResource(string name)
 {
-    // 1. Relative to assembly (published)
-    var asmDir = Path.Combine(AppContext.BaseDirectory, "static");
-    if (Directory.Exists(asmDir)) return asmDir;
+    var assembly = Assembly.GetExecutingAssembly();
+    using var stream = assembly.GetManifestResourceStream(name)
+        ?? throw new InvalidOperationException($"Embedded resource '{name}' not found");
+    using var ms = new MemoryStream();
+    stream.CopyTo(ms);
+    return ms.ToArray();
+}
 
-    // 2. Walk up from cwd to find a static/ sibling of src/
+static string? TryFindStaticDir()
+{
     var dir = new DirectoryInfo(Directory.GetCurrentDirectory());
     while (dir != null)
     {
         var candidate = Path.Combine(dir.FullName, "static");
-        if (Directory.Exists(candidate)) return candidate;
+        if (Directory.Exists(candidate) && File.Exists(Path.Combine(candidate, "index.html")))
+            return candidate;
         dir = dir.Parent;
     }
-
-    // 3. Relative to source file location (dotnet run)
-    var srcDir = Path.GetDirectoryName(AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar));
-    if (srcDir != null)
-    {
-        // go up from bin/Debug/net9.0 → src → project root
-        var up = new DirectoryInfo(srcDir);
-        for (int i = 0; i < 5 && up != null; i++, up = up.Parent!)
-        {
-            var c = Path.Combine(up.FullName, "static");
-            if (Directory.Exists(c)) return c;
-        }
-    }
-
-    throw new InvalidOperationException("Cannot find static/ directory");
+    return null;
 }
 
 static void OpenBrowser(string url)

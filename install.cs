@@ -31,11 +31,6 @@ try
         Path.Combine(skillSourceDir, "skills", "revue", "scripts"),
         Path.Combine(pluginSkillDir, "scripts"));
 
-    // Bundle the static frontend files alongside the binary
-    CopyDirectory(
-        Path.Combine(repoRoot, "static"),
-        Path.Combine(pluginSkillDir, "static"));
-
     // Publish the binary
     Console.WriteLine($"Publishing revue ({rid})...");
     Console.WriteLine();

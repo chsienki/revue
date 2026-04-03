@@ -6,4 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>revue</AssemblyName>
   </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="..\static\index.html" LogicalName="index.html" />
+  </ItemGroup>
 </Project>

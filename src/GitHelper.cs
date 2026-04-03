@@ -54,10 +54,10 @@ public static class GitHelper
             if (line.StartsWith("diff --git "))
             {
                 Flush();
-                // extract b/filename
                 var parts = line.Split(' ');
                 var bPart = parts.Length >= 4 ? parts[3] : parts[^1];
                 currentFile = bPart.StartsWith("b/") ? bPart[2..] : bPart;
+                patchLines.Add(line);
             }
             else if (currentFile != null)
             {
@@ -68,5 +68,16 @@ public static class GitHelper
         }
         Flush();
         return result;
+    }
+
+    public static bool HasWorkingTreeChanges(string repoRoot)
+    {
+        var output = RunGit(["status", "--porcelain"], repoRoot);
+        return !string.IsNullOrWhiteSpace(output);
+    }
+
+    public static string GetMergeBase(string a, string b, string repoRoot)
+    {
+        return RunGit(["merge-base", a, b], repoRoot).Trim();
     }
 }
