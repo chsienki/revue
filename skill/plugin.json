@@ -1,0 +1,6 @@
+{
+  "name": "revue",
+  "description": "Review inline code comments left in revue, a local git diff tool",
+  "version": "1.0.0",
+  "skills": ["skills/"]
+}

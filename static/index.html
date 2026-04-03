@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>revue</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/diff2html/bundles/css/diff2html.min.css" />
+<script src="https://cdn.jsdelivr.net/npm/diff2html/bundles/js/diff2html-ui.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #1e1e1e;
+    --bg2: #252526;
+    --bg3: #2d2d30;
+    --border: #3c3c3c;
+    --text: #cccccc;
+    --text-dim: #858585;
+    --accent: #007acc;
+    --accent2: #0e639c;
+    --add: #1a3a1a;
+    --del: #3a1a1a;
+    --comment-bg: #3a3200;
+    --comment-border: #cca700;
+    --radius: 4px;
+    --font: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    --mono: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  }
+
+  body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 13px; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+  /* Top bar */
+  #topbar {
+    background: var(--bg2);
+    border-bottom: 1px solid var(--border);
+    padding: 8px 12px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+    flex-wrap: wrap;
+  }
+  #topbar .logo { font-weight: 700; font-size: 15px; color: #fff; letter-spacing: 0.5px; margin-right: 6px; }
+  #topbar label { color: var(--text-dim); font-size: 12px; }
+  #topbar select {
+    background: var(--bg3);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 3px 6px;
+    font-size: 12px;
+    cursor: pointer;
+    max-width: 220px;
+  }
+  #topbar select:focus { outline: 1px solid var(--accent); }
+  .arrow { color: var(--text-dim); font-size: 14px; }
+
+  /* Commits dropdown */
+  #commits-btn {
+    background: var(--bg3);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 3px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    position: relative;
+  }
+  #commits-btn:hover { border-color: var(--accent); }
+  #commits-panel {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    z-index: 100;
+    min-width: 480px;
+    max-height: 320px;
+    overflow-y: auto;
+    box-shadow: 0 4px 16px #0008;
+  }
+  #commits-wrapper { position: relative; }
+  #commits-panel.open { display: block; }
+  .commit-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+  .commit-row:hover { background: var(--bg3); }
+  .commit-row.selected { background: var(--accent2); }
+  .commit-hash { font-family: var(--mono); color: var(--accent); min-width: 60px; }
+  .commit-subject { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .commit-author { color: var(--text-dim); min-width: 80px; text-align: right; }
+  #commit-range-hint { padding: 6px 10px; font-size: 11px; color: var(--text-dim); border-bottom: 1px solid var(--border); }
+
+  /* Main layout */
+  #main { display: flex; flex: 1; overflow: hidden; }
+
+  /* File list */
+  #filelist {
+    width: 260px;
+    min-width: 180px;
+    flex-shrink: 0;
+    background: var(--bg2);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+  }
+  #filelist-header {
+    padding: 8px 10px;
+    font-size: 11px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .file-item {
+    padding: 6px 10px;
+    cursor: pointer;
+    border-bottom: 1px solid #2a2a2a;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .file-item:hover { background: var(--bg3); }
+  .file-item.active { background: var(--accent2); }
+  .file-name { flex: 1; font-family: var(--mono); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-stats { font-size: 10px; white-space: nowrap; }
+  .stat-add { color: #4ec94e; }
+  .stat-del { color: #f47174; }
+  .comment-badge {
+    background: var(--comment-border);
+    color: #000;
+    border-radius: 10px;
+    padding: 0 5px;
+    font-size: 10px;
+    font-weight: 700;
+  }
+
+  /* Diff viewer */
+  #diffview {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px;
+    background: var(--bg);
+  }
+  #diffview-placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--text-dim);
+    font-size: 15px;
+  }
+
+  /* diff2html overrides for dark theme */
+  .d2h-wrapper { font-family: var(--mono) !important; font-size: 12px !important; }
+  .d2h-file-header { background: var(--bg2) !important; border-color: var(--border) !important; color: var(--text) !important; }
+  .d2h-file-wrapper { border-color: var(--border) !important; border-radius: var(--radius) !important; }
+  .d2h-code-linenumber { background: var(--bg2) !important; border-color: var(--border) !important; color: var(--text-dim) !important; cursor: pointer !important; }
+  .d2h-code-linenumber:hover { background: var(--accent2) !important; color: #fff !important; }
+  .d2h-code-side-line, .d2h-code-line { background: var(--bg) !important; color: var(--text) !important; }
+  .d2h-ins { background: var(--add) !important; }
+  .d2h-del { background: var(--del) !important; }
+  .d2h-ins .d2h-code-linenumber { background: #1a3a1a !important; }
+  .d2h-del .d2h-code-linenumber { background: #3a1a1a !important; }
+  .d2h-info { background: var(--bg3) !important; color: var(--text-dim) !important; border-color: var(--border) !important; }
+  .d2h-tag { background: var(--bg3) !important; color: var(--text-dim) !important; }
+  td.d2h-code-side-linenumber { cursor: pointer !important; user-select: none; }
+  td.d2h-code-side-linenumber:hover { background: var(--accent2) !important; color: #fff !important; }
+
+  /* Comment threads injected into diff */
+  .revue-comment-row { background: var(--comment-bg) !important; border-left: 3px solid var(--comment-border); }
+  .revue-comment-thread {
+    padding: 8px 12px;
+    font-family: var(--font);
+    font-size: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .revue-comment-item {
+    background: #2d2b00;
+    border: 1px solid var(--comment-border);
+    border-radius: var(--radius);
+    padding: 6px 10px;
+    position: relative;
+  }
+  .revue-comment-body { line-height: 1.5; }
+  .revue-comment-meta { font-size: 10px; color: var(--text-dim); margin-top: 4px; display: flex; gap: 8px; align-items: center; }
+  .revue-comment-meta button {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 10px;
+    padding: 0;
+    text-decoration: underline;
+  }
+  .revue-comment-meta button:hover { color: var(--text); }
+  .revue-comment-item.resolved { opacity: 0.45; }
+
+  /* Comment input box */
+  .revue-comment-input-wrap {
+    background: var(--bg2);
+    border: 1px solid var(--comment-border);
+    border-radius: var(--radius);
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .revue-comment-input-wrap textarea {
+    background: var(--bg3);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 6px 8px;
+    font-family: var(--font);
+    font-size: 12px;
+    resize: vertical;
+    min-height: 60px;
+    width: 100%;
+  }
+  .revue-comment-input-wrap textarea:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+  .revue-comment-btn-row { display: flex; gap: 6px; justify-content: flex-end; }
+  .revue-btn {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius);
+    padding: 4px 12px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .revue-btn:hover { background: var(--accent2); }
+  .revue-btn.secondary { background: var(--bg3); color: var(--text); border: 1px solid var(--border); }
+  .revue-btn.secondary:hover { background: var(--border); }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: var(--bg2); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: #555; }
+
+  #loading { padding: 20px; color: var(--text-dim); text-align: center; }
+  .show-resolved-wrap { padding: 6px 10px; display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-dim); flex-shrink: 0; border-top: 1px solid var(--border); }
+  .show-resolved-wrap input { cursor: pointer; }
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <span class="logo">🎭 revue</span>
+  <label>base</label>
+  <select id="base-sel"></select>
+  <span class="arrow">→</span>
+  <label>head</label>
+  <select id="head-sel"></select>
+  <div id="commits-wrapper">
+    <button id="commits-btn">Commits ▾</button>
+    <div id="commits-panel">
+      <div id="commit-range-hint">Click a commit to set as base, shift-click to set as head</div>
+      <div id="commits-list"></div>
+    </div>
+  </div>
+</div>
+
+<div id="main">
+  <div id="filelist">
+    <div id="filelist-header">Files</div>
+    <div id="filelist-items"></div>
+    <div class="show-resolved-wrap">
+      <input type="checkbox" id="show-resolved" checked />
+      <label for="show-resolved">Show resolved comments</label>
+    </div>
+  </div>
+  <div id="diffview">
+    <div id="diffview-placeholder">← Select a file to review</div>
+  </div>
+</div>
+
+<script>
+const API = '';
+let state = {
+  base: '',
+  head: 'HEAD',
+  files: [],
+  comments: [],
+  currentFile: null,
+  showResolved: true,
+};
+
+// ── Utilities ──────────────────────────────────────────────────────────────
+
+async function api(path) {
+  const r = await fetch(API + path);
+  if (!r.ok) throw new Error(`API error ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+async function apiPost(path, body) {
+  const r = await fetch(API + path, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(`API error ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+async function apiDelete(path) {
+  const r = await fetch(API + path, { method: 'DELETE' });
+  if (!r.ok) throw new Error(`API error ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+// ── Init ───────────────────────────────────────────────────────────────────
+
+async function init() {
+  const [branches, cfg] = await Promise.all([api('/api/branches'), api('/api/config')]);
+  state.base = cfg.default_base;
+  state.head = 'HEAD';
+
+  const baseSel = document.getElementById('base-sel');
+  const headSel = document.getElementById('head-sel');
+  const refs = [state.head, ...branches];
+  refs.forEach(b => {
+    baseSel.add(new Option(b, b, false, b === state.base));
+    headSel.add(new Option(b, b, false, b === state.head));
+  });
+  // ensure default_base is in list
+  if (!refs.includes(state.base)) {
+    baseSel.add(new Option(state.base, state.base, false, true));
+  }
+  baseSel.value = state.base;
+  headSel.value = state.head;
+
+  baseSel.addEventListener('change', () => { state.base = baseSel.value; loadFiles(); });
+  headSel.addEventListener('change', () => { state.head = headSel.value; loadFiles(); });
+
+  document.getElementById('show-resolved').addEventListener('change', e => {
+    state.showResolved = e.target.checked;
+    if (state.currentFile) renderDiff(state.currentFile);
+  });
+
+  await loadFiles();
+  setupCommitsPanel();
+}
+
+// ── Files ──────────────────────────────────────────────────────────────────
+
+async function loadFiles() {
+  state.comments = await api('/api/comments');
+  try {
+    state.files = await api(`/api/diff?base=${encodeURIComponent(state.base)}&head=${encodeURIComponent(state.head)}`);
+  } catch(e) {
+    state.files = [];
+    document.getElementById('diffview').innerHTML = `<div id="diffview-placeholder">Error: ${e.message}</div>`;
+  }
+  renderFileList();
+  if (state.currentFile) {
+    const still = state.files.find(f => f.file === state.currentFile);
+    if (still) renderDiff(state.currentFile);
+    else { state.currentFile = null; document.getElementById('diffview').innerHTML = '<div id="diffview-placeholder">← Select a file to review</div>'; }
+  }
+}
+
+function commentCountForFile(file) {
+  return state.comments.filter(c => c.file === file && (state.showResolved || !c.resolved)).length;
+}
+
+function renderFileList() {
+  const el = document.getElementById('filelist-items');
+  if (!state.files.length) { el.innerHTML = '<div style="padding:12px;color:var(--text-dim)">No changes</div>'; return; }
+  el.innerHTML = '';
+  state.files.forEach(f => {
+    const cnt = commentCountForFile(f.file);
+    const div = document.createElement('div');
+    div.className = 'file-item' + (f.file === state.currentFile ? ' active' : '');
+    div.innerHTML = `
+      <span class="file-name" title="${f.file}">${f.file}</span>
+      <span class="file-stats"><span class="stat-add">+${f.additions}</span> <span class="stat-del">-${f.deletions}</span></span>
+      ${cnt ? `<span class="comment-badge">${cnt}</span>` : ''}
+    `;
+    div.addEventListener('click', () => renderDiff(f.file));
+    el.appendChild(div);
+  });
+}
+
+// ── Diff rendering ─────────────────────────────────────────────────────────
+
+async function renderDiff(file) {
+  state.currentFile = file;
+  renderFileList();
+  const dv = document.getElementById('diffview');
+  dv.innerHTML = '<div id="loading">Loading diff…</div>';
+  const data = await api(`/api/file-diff?base=${encodeURIComponent(state.base)}&head=${encodeURIComponent(state.head)}&file=${encodeURIComponent(file)}`);
+
+  dv.innerHTML = '<div id="d2h-target"></div>';
+  const target = document.getElementById('d2h-target');
+
+  if (!data.patch) {
+    dv.innerHTML = '<div id="diffview-placeholder">No diff available</div>';
+    return;
+  }
+
+  // Build a proper unified diff header so diff2html parses it
+  const fakeDiff = `--- a/${file}\n+++ b/${file}\n${data.patch}`;
+
+  const ui = new Diff2HtmlUI(target, fakeDiff, {
+    drawFileList: false,
+    matching: 'lines',
+    outputFormat: 'side-by-side',
+    renderNothingWhenEmpty: false,
+    highlight: true,
+  });
+  ui.draw();
+
+  injectComments(file, data.patch);
+  attachLineClickHandlers(file, data.patch);
+}
+
+// ── Comment injection ──────────────────────────────────────────────────────
+
+function injectComments(file, patch) {
+  const lineComments = {};
+  state.comments
+    .filter(c => c.file === file && c.base === state.base && c.head === state.head)
+    .filter(c => state.showResolved || !c.resolved)
+    .forEach(c => {
+      const key = `${c.side}:${c.line}`;
+      if (!lineComments[key]) lineComments[key] = [];
+      lineComments[key].push(c);
+    });
+
+  if (!Object.keys(lineComments).length) return;
+
+  // Find all line number cells and inject threads after their <tr>
+  const rows = document.querySelectorAll('#d2h-target tr');
+  rows.forEach(tr => {
+    const cells = tr.querySelectorAll('td.d2h-code-side-linenumber, td.d2h-code-linenumber');
+    cells.forEach(cell => {
+      const lineNum = parseInt(cell.textContent.trim(), 10);
+      if (isNaN(lineNum)) return;
+      // determine side from class
+      const side = cell.closest('.d2h-file-side-diff') ?
+        (cell.closest('.d2h-file-side-diff:first-of-type') ? 'left' : 'right') : 'right';
+      const key = `right:${lineNum}`; // simplification: use right side
+      const comments = lineComments[key] || lineComments[`left:${lineNum}`];
+      if (comments && !tr.dataset.injected) {
+        tr.dataset.injected = '1';
+        const insertRow = tr.insertAdjacentElement ? tr : tr;
+        const threadRow = document.createElement('tr');
+        threadRow.className = 'revue-comment-row';
+        const colCount = tr.cells.length || 4;
+        threadRow.innerHTML = `<td colspan="${colCount}" class="revue-comment-thread"></td>`;
+        tr.after(threadRow);
+        const threadTd = threadRow.querySelector('.revue-comment-thread');
+        comments.forEach(c => renderCommentItem(threadTd, c, file));
+      }
+    });
+  });
+}
+
+function renderCommentItem(container, c, file) {
+  const div = document.createElement('div');
+  div.className = 'revue-comment-item' + (c.resolved ? ' resolved' : '');
+  div.dataset.id = c.id;
+  div.innerHTML = `
+    <div class="revue-comment-body">${escHtml(c.body)}</div>
+    <div class="revue-comment-meta">
+      <span>Line ${c.line}</span>
+      <span>${new Date(c.created).toLocaleString()}</span>
+      <button class="resolve-btn">${c.resolved ? 'Unresolve' : 'Resolve'}</button>
+      <button class="delete-btn">Delete</button>
+    </div>
+  `;
+  div.querySelector('.resolve-btn').addEventListener('click', async () => {
+    await apiPost('/api/comments', {...c, resolved: !c.resolved});
+    state.comments = await api('/api/comments');
+    renderDiff(file);
+  });
+  div.querySelector('.delete-btn').addEventListener('click', async () => {
+    await apiDelete(`/api/comments/${c.id}`);
+    state.comments = await api('/api/comments');
+    renderDiff(file);
+    renderFileList();
+  });
+  container.appendChild(div);
+}
+
+// ── Line click → comment box ───────────────────────────────────────────────
+
+function attachLineClickHandlers(file, patch) {
+  const lines = patch.split('\n');
+  const lineMap = buildLineMap(lines);
+
+  document.querySelectorAll('#d2h-target td.d2h-code-side-linenumber, #d2h-target td.d2h-code-linenumber').forEach(cell => {
+    cell.addEventListener('click', () => {
+      const lineNum = parseInt(cell.textContent.trim(), 10);
+      if (isNaN(lineNum)) return;
+      const tr = cell.closest('tr');
+      if (!tr) return;
+      // Don't open if already has an open input
+      if (tr.nextSibling && tr.nextSibling.classList && tr.nextSibling.classList.contains('revue-input-row')) return;
+
+      const lineContent = lineMap[lineNum] || '';
+      showCommentInput(tr, file, lineNum, lineContent, 'right');
+    });
+  });
+}
+
+function buildLineMap(lines) {
+  const map = {};
+  let newLine = 0;
+  lines.forEach(l => {
+    if (l.startsWith('@@')) {
+      const m = l.match(/@@ [^+]*\+(\d+)/);
+      if (m) newLine = parseInt(m[1], 10) - 1;
+    } else if (l.startsWith('+')) {
+      newLine++;
+      map[newLine] = l.slice(1);
+    } else if (!l.startsWith('-')) {
+      newLine++;
+    }
+  });
+  return map;
+}
+
+function showCommentInput(tr, file, line, lineContent, side) {
+  const inputRow = document.createElement('tr');
+  inputRow.className = 'revue-input-row revue-comment-row';
+  const colCount = tr.cells.length || 4;
+  inputRow.innerHTML = `<td colspan="${colCount}"></td>`;
+  tr.after(inputRow);
+  const td = inputRow.querySelector('td');
+  const wrap = document.createElement('div');
+  wrap.className = 'revue-comment-input-wrap';
+  wrap.innerHTML = `
+    <div style="font-size:11px;color:var(--text-dim)">Comment on line ${line}: <code style="color:var(--text)">${escHtml(lineContent.trim().slice(0,80))}</code></div>
+    <textarea placeholder="Leave a comment…" autofocus></textarea>
+    <div class="revue-comment-btn-row">
+      <button class="revue-btn secondary cancel-btn">Cancel</button>
+      <button class="revue-btn save-btn">Save Comment</button>
+    </div>
+  `;
+  td.appendChild(wrap);
+  wrap.querySelector('textarea').focus();
+
+  wrap.querySelector('.cancel-btn').addEventListener('click', () => inputRow.remove());
+  wrap.querySelector('.save-btn').addEventListener('click', async () => {
+    const body = wrap.querySelector('textarea').value.trim();
+    if (!body) return;
+    await apiPost('/api/comments', { file, line, line_content: lineContent, base: state.base, head: state.head, side, body });
+    state.comments = await api('/api/comments');
+    inputRow.remove();
+    renderDiff(file);
+    renderFileList();
+  });
+}
+
+// ── Commits panel ──────────────────────────────────────────────────────────
+
+async function setupCommitsPanel() {
+  const btn = document.getElementById('commits-btn');
+  const panel = document.getElementById('commits-panel');
+  btn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    panel.classList.toggle('open');
+    if (panel.classList.contains('open')) await loadCommits();
+  });
+  document.addEventListener('click', () => panel.classList.remove('open'));
+  panel.addEventListener('click', e => e.stopPropagation());
+}
+
+async function loadCommits() {
+  const list = document.getElementById('commits-list');
+  list.innerHTML = '<div style="padding:8px;color:var(--text-dim)">Loading…</div>';
+  try {
+    const commits = await api(`/api/log?base=${encodeURIComponent(state.base)}&head=${encodeURIComponent(state.head)}`);
+    list.innerHTML = '';
+    if (!commits.length) { list.innerHTML = '<div style="padding:8px;color:var(--text-dim)">No commits</div>'; return; }
+    commits.forEach(c => {
+      const row = document.createElement('div');
+      row.className = 'commit-row';
+      row.innerHTML = `<span class="commit-hash">${c.short_hash}</span><span class="commit-subject" title="${escHtml(c.subject)}">${escHtml(c.subject)}</span><span class="commit-author">${escHtml(c.author)}</span>`;
+      row.addEventListener('click', (e) => {
+        if (e.shiftKey) {
+          state.head = c.hash;
+          document.getElementById('head-sel').value = c.hash;
+        } else {
+          state.base = c.hash;
+          document.getElementById('base-sel').value = c.hash;
+        }
+        document.getElementById('commits-panel').classList.remove('open');
+        loadFiles();
+      });
+      list.appendChild(row);
+    });
+  } catch(e) {
+    list.innerHTML = `<div style="padding:8px;color:var(--text-dim)">Error: ${e.message}</div>`;
+  }
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Boot ───────────────────────────────────────────────────────────────────
+init().catch(e => {
+  document.getElementById('diffview').innerHTML = `<div id="diffview-placeholder" style="color:#f47174">Failed to load: ${e.message}</div>`;
+});
+</script>
+</body>
+</html>

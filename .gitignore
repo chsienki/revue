@@ -1,0 +1,17 @@
+# .NET build output
+src/bin/
+src/obj/
+
+# Python (legacy, kept for reference)
+__pycache__/
+*.pyc
+*.pyo
+revue.py
+requirements.txt
+
+# Local review comments (never commit these)
+.revue/
+
+# OS
+.DS_Store
+Thumbs.db
