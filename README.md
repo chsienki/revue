@@ -47,13 +47,55 @@ dotnet publish src -c Release -r win-x64 --self-contained -o dist/win
 
 Then run the resulting `revue` binary directly — no dotnet install needed.
 
+## Features
+
+### Diff viewer
+- Side-by-side or inline diff layout (toggle in Settings)
+- Syntax highlighting via highlight.js
+- Horizontally sticky line numbers
+- Loading overlay with spinner during diff updates
+
+### Theme support
+- Light and dark themes (VS Code-inspired colors)
+- Defaults to system preference via `prefers-color-scheme`
+- Override in Settings → Theme (auto / dark / light)
+- Persisted via cookie
+
+### File browser
+- Hierarchical collapsible file tree with folder grouping
+- Single-child folder chains collapsed (e.g., `src/components` instead of nested)
+- File change stats (`+/-` counts)
+- Resizable file list panel (drag the right edge)
+
+### Commit range selection
+- Click the "Commits ▾" button to see all commits in range
+- Click a commit to view just that commit's changes
+- Shift-click to select a range of commits (GitHub-style)
+- Range indicator badge shows selected SHA(s) with a clear button
+- Uses three-dot diff semantics (`base...head`)
+
+### Inline comments
+- Click any line number to open a comment box
+- Comments appear inline as highlighted threads
+- Resolve or delete comments
+- Toggle resolved comment visibility with the checkbox
+- Comments stored locally in `.revue/comments.json` (gitignored)
+
+### Settings
+- **Theme**: Auto (system) / Dark / Light
+- **Ignore whitespace**: Strips whitespace-only changes from diffs
+- **Diff layout**: Side-by-side or inline
+
+### Accessibility
+- All font sizes use `rem` units — scales with browser default font size
+
 ## Usage
 
 1. **Select range**: Use the `base` and `head` dropdowns to pick your diff range. Defaults to `upstream/main → HEAD` (falls back to `origin/main` → `main`).
 
-2. **Browse files**: The left panel lists all changed files with `+/-` counts. Click a file to load its diff.
+2. **Browse files**: The left panel shows a hierarchical file tree of all changed files. Click a file to load its diff.
 
-3. **Commits**: Click the "Commits ▾" button to see all commits in range. Click to set as `base`; shift-click to set as `head`.
+3. **Commits**: Click "Commits ▾" to see all commits in range. Click a commit to view its changes; shift-click to select a range.
 
 4. **Leave comments**: Click any line number in the diff to open a comment box. Type your comment and save.
 

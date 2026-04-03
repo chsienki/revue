@@ -11,6 +11,13 @@
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
   :root {
+    --radius: 4px;
+    --font: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    --mono: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  }
+
+  /* Dark theme */
+  [data-theme="dark"] {
     --bg: #1e1e1e;
     --bg2: #252526;
     --bg3: #2d2d30;
@@ -21,11 +28,32 @@
     --accent2: #0e639c;
     --add: #1a3a1a;
     --del: #3a1a1a;
+    --add-line: #1a3a1a;
+    --del-line: #3a1a1a;
+    --add-word: #2ea04366;
+    --del-word: #f4717466;
     --comment-bg: #3a3200;
     --comment-border: #cca700;
-    --radius: 4px;
-    --font: 'Segoe UI', system-ui, -apple-system, sans-serif;
-    --mono: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  }
+
+  /* Light theme */
+  [data-theme="light"] {
+    --bg: #ffffff;
+    --bg2: #f3f3f3;
+    --bg3: #e8e8e8;
+    --border: #d1d1d1;
+    --text: #1e1e1e;
+    --text-dim: #6e6e6e;
+    --accent: #0066b8;
+    --accent2: #c2e0ff;
+    --add: #dafbe1;
+    --del: #ffebe9;
+    --add-line: #dafbe1;
+    --del-line: #ffebe9;
+    --add-word: #acf2bd;
+    --del-word: #fdb8c0;
+    --comment-bg: #fff8c5;
+    --comment-border: #d4a72c;
   }
 
   body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 0.8125rem; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
@@ -43,7 +71,7 @@
     line-height: 1;
   }
   #topbar .logo-icon { font-size: 1.125rem; }
-  #topbar .logo { font-weight: 700; font-size: 1.125rem; color: #fff; letter-spacing: 0.5px; white-space: nowrap; }
+  #topbar .logo { font-weight: 700; font-size: 1.125rem; color: var(--text); letter-spacing: 0.5px; white-space: nowrap; }
   #topbar label { color: var(--text-dim); }
   #topbar select {
     background: var(--bg3);
@@ -299,16 +327,16 @@
   .d2h-code-side-line, .d2h-code-line { background: var(--bg) !important; color: var(--text) !important; padding: 0 0.5em !important; width: auto !important; }
   .d2h-ins .d2h-code-side-line, .d2h-ins .d2h-code-line { background: var(--add) !important; }
   .d2h-del .d2h-code-side-line, .d2h-del .d2h-code-line { background: var(--del) !important; }
-  .d2h-ins .d2h-code-side-line ins, .d2h-ins .d2h-code-line ins { background: #2ea04366 !important; text-decoration: none !important; }
-  .d2h-del .d2h-code-side-line del, .d2h-del .d2h-code-line del { background: #f4717466 !important; text-decoration: none !important; }
+  .d2h-ins .d2h-code-side-line ins, .d2h-ins .d2h-code-line ins { background: var(--add-word) !important; text-decoration: none !important; }
+  .d2h-del .d2h-code-side-line del, .d2h-del .d2h-code-line del { background: var(--del-word) !important; text-decoration: none !important; }
   .d2h-ins { background: var(--add) !important; border: none !important; outline: none !important; }
   .d2h-del { background: var(--del) !important; border: none !important; outline: none !important; }
   /* Make hljs backgrounds transparent so diff ins/del colors show through */
   .d2h-code-line .hljs, .d2h-code-side-line .hljs { background: transparent !important; }
   .d2h-ins .hljs, .d2h-del .hljs { background: transparent !important; }
   .d2h-code-side-emptyplaceholder, .d2h-emptyplaceholder { background: var(--bg3) !important; border-color: var(--border) !important; }
-  .d2h-ins .d2h-code-linenumber, .d2h-ins .d2h-code-side-linenumber { background: #1a3a1a !important; box-shadow: 1px 0 0 0 var(--border) !important; }
-  .d2h-del .d2h-code-linenumber, .d2h-del .d2h-code-side-linenumber { background: #3a1a1a !important; box-shadow: 1px 0 0 0 var(--border) !important; }
+  .d2h-ins .d2h-code-linenumber, .d2h-ins .d2h-code-side-linenumber { background: var(--add-line) !important; box-shadow: 1px 0 0 0 var(--border) !important; }
+  .d2h-del .d2h-code-linenumber, .d2h-del .d2h-code-side-linenumber { background: var(--del-line) !important; box-shadow: 1px 0 0 0 var(--border) !important; }
   .d2h-info { background: var(--bg3) !important; color: var(--text-dim) !important; border-color: var(--border) !important; }
   .d2h-info .d2h-code-side-line, .d2h-info .d2h-code-line { background: var(--bg3) !important; width: auto !important; padding: 0 0.5em !important; position: sticky !important; left: 0 !important; }
   .d2h-info .d2h-code-linenumber, .d2h-info .d2h-code-side-linenumber { background: var(--bg3) !important; }
@@ -393,7 +421,7 @@
   ::-webkit-scrollbar { width: 8px; height: 8px; }
   ::-webkit-scrollbar-track { background: var(--bg2); }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
-  ::-webkit-scrollbar-thumb:hover { background: #555; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
 
   #loading { padding: 20px; color: var(--text-dim); text-align: center; }
   .show-resolved-wrap { padding: 6px 10px; display: flex; align-items: center; gap: 6px; font-size: 0.75rem; color: var(--text-dim); flex-shrink: 0; border-top: 1px solid var(--border); }
@@ -423,6 +451,14 @@
   <div id="settings-wrapper">
     <button id="settings-btn">⚙ Settings ▾</button>
     <div id="settings-panel">
+      <div class="settings-item">
+        <label for="setting-theme">Theme</label>
+        <select id="setting-theme">
+          <option value="auto">Auto (system)</option>
+          <option value="dark">Dark</option>
+          <option value="light">Light</option>
+        </select>
+      </div>
       <div class="settings-item">
         <input type="checkbox" id="setting-whitespace" />
         <label for="setting-whitespace">Ignore whitespace</label>
@@ -481,6 +517,24 @@ function loadPref(key, fallback) {
 state.ignoreWhitespace = loadPref('ignoreWhitespace', 'false') === 'true';
 state.diffLayout = loadPref('diffLayout', 'side-by-side');
 state.showResolved = loadPref('showResolved', 'true') === 'true';
+state.theme = loadPref('theme', 'auto');
+
+function applyTheme(theme) {
+  const resolved = theme === 'auto'
+    ? (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark')
+    : theme;
+  document.documentElement.setAttribute('data-theme', resolved);
+  // Swap highlight.js stylesheet
+  const hlLink = document.querySelector('link[href*="highlight.js"]');
+  if (hlLink) {
+    const style = resolved === 'light' ? 'github' : 'github-dark';
+    hlLink.href = `https://cdn.jsdelivr.net/npm/highlight.js@11/styles/${style}.min.css`;
+  }
+}
+applyTheme(state.theme);
+window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
+  if (state.theme === 'auto') applyTheme('auto');
+});
 
 async function api(path) {
   const r = await fetch(API + path);
@@ -545,8 +599,10 @@ async function init() {
 
   const wsCheck = document.getElementById('setting-whitespace');
   const layoutSel = document.getElementById('setting-layout');
+  const themeSel = document.getElementById('setting-theme');
   wsCheck.checked = state.ignoreWhitespace;
   layoutSel.value = state.diffLayout;
+  themeSel.value = state.theme;
   document.getElementById('show-resolved').checked = state.showResolved;
 
   wsCheck.addEventListener('change', () => {
@@ -558,6 +614,11 @@ async function init() {
     state.diffLayout = layoutSel.value;
     savePref('diffLayout', state.diffLayout);
     renderAllDiffs();
+  });
+  themeSel.addEventListener('change', () => {
+    state.theme = themeSel.value;
+    savePref('theme', state.theme);
+    applyTheme(state.theme);
   });
 
   await loadFiles();
