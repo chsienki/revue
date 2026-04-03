@@ -202,7 +202,8 @@ static string FindRepoRoot(string start)
     var p = new DirectoryInfo(Path.GetFullPath(start));
     while (true)
     {
-        if (Directory.Exists(Path.Combine(p.FullName, ".git")))
+        if (Directory.Exists(Path.Combine(p.FullName, ".git"))
+            || File.Exists(Path.Combine(p.FullName, ".git")))
             return p.FullName;
         if (p.Parent == null)
             throw new InvalidOperationException($"No git repository found at or above {start}");
@@ -257,7 +258,7 @@ static string FindStaticDir()
     }
 
     // 3. Relative to source file location (dotnet run)
-    var srcDir = Path.GetDirectoryName(typeof(Program).Assembly.Location);
+    var srcDir = Path.GetDirectoryName(AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar));
     if (srcDir != null)
     {
         // go up from bin/Debug/net9.0 → src → project root

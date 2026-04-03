@@ -1,15 +1,71 @@
+---
+name: revue
+description: "Launch the revue code review server and respond to inline review comments"
+---
+
 # revue — Copilot Skill
 
 ## What is revue?
 
 **revue** is a local web-based git diff reviewer. When a developer reviews a pull request locally, they can click on diff lines to leave inline comments. These comments are stored in `.revue/comments.json` at the root of the git repository.
 
-## Your Role
+This skill provides two capabilities:
 
-When the user asks you to "review my comments", "address my revue comments", "respond to my review comments", or similar phrases, you should:
+1. **Launch** the revue server so the user can browse diffs and leave comments in the browser
+2. **Review** the comments the user left and respond to them as a thoughtful code reviewer
 
-1. Read `.revue/comments.json` from the current repository root (or use the helper script below)
-2. For each **unresolved** comment, show:
+---
+
+## Capability 1: Launch the Revue Server
+
+### Trigger Phrases
+
+- "launch revue"
+- "start revue"
+- "open revue"
+- "run revue"
+
+### What To Do
+
+Start the revue server for the **current repository** so the user can review diffs in the browser.
+
+**IMPORTANT: revue is NOT an npm package, pip package, or system tool. It is a .NET binary bundled with this skill. Do NOT try npx, npm, pip, brew, or any package manager. Follow these steps exactly:**
+
+1. Find the `revue` executable bundled with this skill. It is in the same directory as this SKILL.md file, inside the Copilot installed plugins directory. **This is always the first step — do not skip it or try alternatives.**
+   - **Windows**: `Get-ChildItem -Path "$env:USERPROFILE\.copilot\installed-plugins" -Filter "revue.exe" -Recurse | Select-Object -First 1 -ExpandProperty FullName`
+   - **macOS/Linux**: `find ~/.copilot/installed-plugins -name revue -type f | head -1`
+2. Start the server as a **detached background process** so it keeps running while the user continues chatting:
+   ```
+   <path-to-revue-exe> <current-repo-root>
+   ```
+   - `<current-repo-root>` is the git root of whatever repo the user is currently working in (use `git rev-parse --show-toplevel` to find it).
+   - If the user is already in the revue repo itself, omit the trailing argument — it defaults to the current directory.
+3. The server automatically finds a free port starting at **7878** and opens the browser.
+4. Tell the user the server is running and they can leave inline comments in the browser. Remind them to come back and say "address my revue comments" when they're done.
+
+### Important
+
+- **Do NOT use npx, npm, pip, or any package manager to find or run revue.**
+- The server **must** be started as a detached process (it needs to stay alive).
+- Don't wait for the server to exit — it runs until the user stops it.
+
+---
+
+## Capability 2: Review and Respond to Comments
+
+### Trigger Phrases
+
+- "review my comments"
+- "address my review comments"
+- "respond to my revue comments"
+- "what did I comment on?"
+- "go through my inline comments"
+- "help me with my PR comments"
+
+### What To Do
+
+1. Read `.revue/comments.json` from the current repository root
+2. For each **unresolved** comment (`"resolved": false`), show:
    - The **file path** and **line number**
    - The **line content** (the actual code on that line)
    - The **comment body** (what the developer wrote)
@@ -20,22 +76,16 @@ When the user asks you to "review my comments", "address my revue comments", "re
    - If it's pointing out a bug → explain the issue and suggest a fix
 4. After addressing all comments, offer a brief summary
 
-## Reading the Comments File
+### Comment Schema
 
-The comments file is at: `.revue/comments.json` (relative to git repo root)
+The comments file is at `.revue/comments.json` (relative to git repo root). Each comment:
 
-Use the helper script to get a nicely formatted summary:
-```
-bash .revue/../skill/skills/revue/scripts/read_comments.sh
-```
-
-Or read the file directly and parse the JSON. Each comment object looks like:
 ```json
 {
   "id": "uuid",
   "file": "src/Foo.cs",
   "line": 42,
-  "line_content": "    return null;",
+  "lineContent": "    return null;",
   "base": "upstream/main",
   "head": "HEAD",
   "side": "right",
@@ -45,18 +95,10 @@ Or read the file directly and parse the JSON. Each comment object looks like:
 }
 ```
 
-## Trigger Phrases
-
-This skill activates when the user says things like:
-- "review my comments"
-- "address my review comments"
-- "respond to my revue comments"
-- "what did I comment on?"
-- "go through my inline comments"
-- "help me with my PR comments"
+---
 
 ## Notes
 
-- Only address **unresolved** comments (`"resolved": false`) unless the user asks for resolved ones too
+- Only address **unresolved** comments unless the user asks for resolved ones too
 - The `.revue/` directory is gitignored — comments are local only
 - Comments are tied to a specific `base`/`head` diff range; mention this context when relevant
