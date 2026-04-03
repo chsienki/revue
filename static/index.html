@@ -28,7 +28,7 @@
     --mono: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
   }
 
-  body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 13px; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+  body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 0.8125rem; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
 
   /* Top bar */
   #topbar {
@@ -36,25 +36,29 @@
     border-bottom: 1px solid var(--border);
     padding: 8px 12px;
     display: flex;
-    align-items: center;
+    align-items: baseline;
     gap: 10px;
     flex-shrink: 0;
-    flex-wrap: wrap;
+    font-size: 0.9375rem;
+    line-height: 1;
   }
-  #topbar .logo { font-weight: 700; font-size: 15px; color: #fff; letter-spacing: 0.5px; margin-right: 6px; }
-  #topbar label { color: var(--text-dim); font-size: 13px; }
+  #topbar .logo-icon { font-size: 1.125rem; }
+  #topbar .logo { font-weight: 700; font-size: 1.125rem; color: #fff; letter-spacing: 0.5px; white-space: nowrap; }
+  #topbar label { color: var(--text-dim); }
   #topbar select {
     background: var(--bg3);
     color: var(--text);
     border: 1px solid var(--border);
     border-radius: var(--radius);
     padding: 3px 6px;
-    font-size: 13px;
+    font-size: 0.875rem;
     cursor: pointer;
     max-width: 220px;
   }
   #topbar select:focus { outline: 1px solid var(--accent); }
-  .arrow { color: var(--text-dim); font-size: 14px; }
+  .arrow { color: var(--text-dim); font-size: 0.9375rem; }
+  .topbar-group { display: flex; align-items: baseline; gap: 6px; }
+  .topbar-spacer { flex: 1; }
 
   /* Commits dropdown */
   #commits-btn {
@@ -62,12 +66,30 @@
     color: var(--text);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 3px 10px;
-    font-size: 13px;
+    padding: 3px 6px;
+    font-size: 0.875rem;
+    font-family: inherit;
+    line-height: normal;
     cursor: pointer;
-    position: relative;
   }
   #commits-btn:hover { border-color: var(--accent); }
+  #commits-btn.range-active { border-color: var(--accent); background: var(--accent2); }
+  #commit-range-label {
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    color: var(--accent);
+    display: none;
+    align-items: center;
+    gap: 4px;
+  }
+  #commit-range-label.active { display: flex; }
+  #commit-range-label .range-clear {
+    cursor: pointer;
+    color: var(--text-dim);
+    font-size: 0.875rem;
+    margin-left: 2px;
+  }
+  #commit-range-label .range-clear:hover { color: #fff; }
   #commits-panel {
     display: none;
     position: absolute;
@@ -82,7 +104,7 @@
     overflow-y: auto;
     box-shadow: 0 4px 16px #0008;
   }
-  #commits-wrapper { position: relative; }
+  #commits-wrapper { position: relative; display: flex; align-items: baseline; gap: 6px; }
   #commits-panel.open { display: block; }
   .commit-row {
     display: flex;
@@ -91,24 +113,28 @@
     padding: 6px 10px;
     cursor: pointer;
     border-bottom: 1px solid var(--border);
-    font-size: 12px;
+    font-size: 0.75rem;
+    user-select: none;
   }
   .commit-row:hover { background: var(--bg3); }
   .commit-row.selected { background: var(--accent2); }
+  .commit-row.in-range { background: rgba(88, 166, 255, 0.1); }
   .commit-hash { font-family: var(--mono); color: var(--accent); min-width: 60px; }
   .commit-subject { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .commit-author { color: var(--text-dim); min-width: 80px; text-align: right; }
-  #commit-range-hint { padding: 6px 10px; font-size: 11px; color: var(--text-dim); border-bottom: 1px solid var(--border); }
+  #commit-range-hint { padding: 6px 10px; font-size: 0.6875rem; color: var(--text-dim); border-bottom: 1px solid var(--border); }
 
   /* Settings dropdown */
-  #settings-wrapper { position: relative; margin-left: auto; }
+  #settings-wrapper { position: relative; }
   #settings-btn {
     background: var(--bg3);
     color: var(--text);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 3px 10px;
-    font-size: 13px;
+    padding: 3px 6px;
+    font-size: 0.875rem;
+    font-family: inherit;
+    line-height: normal;
     cursor: pointer;
   }
   #settings-btn:hover { border-color: var(--accent); }
@@ -128,7 +154,7 @@
   #settings-panel.open { display: block; }
   .settings-item {
     padding: 6px 12px;
-    font-size: 13px;
+    font-size: 0.8125rem;
     display: flex;
     align-items: center;
     gap: 8px;
@@ -168,7 +194,7 @@
   #filelist-resize:hover, #filelist-resize.dragging { background: var(--accent); }
   #filelist-header {
     padding: 8px 10px;
-    font-size: 11px;
+    font-size: 0.6875rem;
     color: var(--text-dim);
     text-transform: uppercase;
     letter-spacing: 0.6px;
@@ -184,8 +210,8 @@
   }
   .file-item:hover { background: var(--bg3); }
   .file-item.active { background: var(--accent2); }
-  .file-name { flex: 1; font-family: var(--mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .file-stats { font-size: 11px; white-space: nowrap; }
+  .file-name { flex: 1; font-family: var(--mono); font-size: 0.75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-stats { font-size: 0.6875rem; white-space: nowrap; }
   .folder-row {
     padding: 5px 10px;
     cursor: pointer;
@@ -193,7 +219,7 @@
     align-items: center;
     gap: 4px;
     font-family: var(--mono);
-    font-size: 12px;
+    font-size: 0.75rem;
     color: var(--text-dim);
     user-select: none;
     border-top: 1px solid #2a2a2a;
@@ -203,7 +229,7 @@
   }
   .folder-row:first-child { border-top: none; }
   .folder-row:hover { background: var(--bg3); }
-  .folder-row .folder-arrow { font-size: 10px; width: 12px; display: inline-block; transition: transform 0.15s; }
+  .folder-row .folder-arrow { font-size: 0.625rem; width: 12px; display: inline-block; transition: transform 0.15s; }
   .folder-row.collapsed .folder-arrow { transform: rotate(-90deg); }
   .folder-children { }
   .folder-children.hidden { display: none; }
@@ -215,7 +241,7 @@
     color: #000;
     border-radius: 10px;
     padding: 0 5px;
-    font-size: 10px;
+    font-size: 0.625rem;
     font-weight: 700;
   }
 
@@ -224,19 +250,42 @@
     flex: 1;
     overflow-y: auto;
     background: var(--bg);
+    position: relative;
   }
-  #diffview > * { margin: 12px; }
+  #diffview > *:not(#loading-overlay) { margin: 0; }
+  #diffview-content > * { margin: 12px; }
   #diffview-placeholder {
     display: flex;
     align-items: center;
     justify-content: center;
     height: 100%;
     color: var(--text-dim);
-    font-size: 15px;
+    font-size: 0.9375rem;
   }
+  #loading-overlay {
+    display: none;
+    position: absolute;
+    inset: 0;
+    background: rgba(30, 30, 46, 0.7);
+    z-index: 50;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.9375rem;
+    color: var(--text-dim);
+  }
+  #loading-overlay.active { display: flex; }
+  .spinner { 
+    width: 20px; height: 20px; 
+    border: 2px solid var(--border); 
+    border-top-color: var(--accent); 
+    border-radius: 50%; 
+    animation: spin 0.6s linear infinite; 
+    margin-right: 10px; 
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
 
   /* diff2html overrides for dark theme */
-  .d2h-wrapper { font-family: var(--mono) !important; font-size: 12px !important; }
+  .d2h-wrapper { font-family: var(--mono) !important; font-size: 0.75rem !important; }
   .d2h-file-header { background: var(--bg2) !important; border-color: var(--border) !important; color: var(--text) !important; position: sticky !important; top: 0 !important; z-index: 20 !important; }
   .d2h-file-wrapper { border-color: var(--border) !important; border-radius: var(--radius) !important; }
   .d2h-file-diff { position: relative; z-index: 1; background: var(--bg) !important; }
@@ -277,7 +326,7 @@
   .revue-comment-thread {
     padding: 8px 12px;
     font-family: var(--font);
-    font-size: 12px;
+    font-size: 0.75rem;
     display: flex;
     flex-direction: column;
     gap: 6px;
@@ -290,13 +339,13 @@
     position: relative;
   }
   .revue-comment-body { line-height: 1.5; }
-  .revue-comment-meta { font-size: 10px; color: var(--text-dim); margin-top: 4px; display: flex; gap: 8px; align-items: center; }
+  .revue-comment-meta { font-size: 0.625rem; color: var(--text-dim); margin-top: 4px; display: flex; gap: 8px; align-items: center; }
   .revue-comment-meta button {
     background: none;
     border: none;
     color: var(--text-dim);
     cursor: pointer;
-    font-size: 10px;
+    font-size: 0.625rem;
     padding: 0;
     text-decoration: underline;
   }
@@ -320,7 +369,7 @@
     border-radius: var(--radius);
     padding: 6px 8px;
     font-family: var(--font);
-    font-size: 12px;
+    font-size: 0.75rem;
     resize: vertical;
     min-height: 60px;
     width: 100%;
@@ -333,7 +382,7 @@
     border: none;
     border-radius: var(--radius);
     padding: 4px 12px;
-    font-size: 12px;
+    font-size: 0.75rem;
     cursor: pointer;
   }
   .revue-btn:hover { background: var(--accent2); }
@@ -347,26 +396,30 @@
   ::-webkit-scrollbar-thumb:hover { background: #555; }
 
   #loading { padding: 20px; color: var(--text-dim); text-align: center; }
-  .show-resolved-wrap { padding: 6px 10px; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); flex-shrink: 0; border-top: 1px solid var(--border); }
+  .show-resolved-wrap { padding: 6px 10px; display: flex; align-items: center; gap: 6px; font-size: 0.75rem; color: var(--text-dim); flex-shrink: 0; border-top: 1px solid var(--border); }
   .show-resolved-wrap input { cursor: pointer; }
 </style>
 </head>
 <body>
 
 <div id="topbar">
-  <span class="logo">🎭 revue</span>
-  <label>base</label>
-  <select id="base-sel"></select>
-  <span class="arrow">→</span>
-  <label>head</label>
-  <select id="head-sel"></select>
+  <span class="logo-icon">🎭</span><span class="logo">revue</span>
+  <div class="topbar-group">
+    <label>base</label>
+    <select id="base-sel"></select>
+    <span class="arrow">→</span>
+    <label>head</label>
+    <select id="head-sel"></select>
+  </div>
   <div id="commits-wrapper">
     <button id="commits-btn">Commits ▾</button>
+    <span id="commit-range-label"></span>
     <div id="commits-panel">
-      <div id="commit-range-hint">Click a commit to set as base, shift-click to set as head</div>
+      <div id="commit-range-hint">Click a commit to view its changes · Shift-click to select a range</div>
       <div id="commits-list"></div>
     </div>
   </div>
+  <div class="topbar-spacer"></div>
   <div id="settings-wrapper">
     <button id="settings-btn">⚙ Settings ▾</button>
     <div id="settings-panel">
@@ -396,7 +449,10 @@
     <div id="filelist-resize"></div>
   </div>
   <div id="diffview">
-    <div id="diffview-placeholder">← Select a file to review</div>
+    <div id="loading-overlay"><div class="spinner"></div> Loading diffs…</div>
+    <div id="diffview-content">
+      <div id="diffview-placeholder">← Select a file to review</div>
+    </div>
   </div>
 </div>
 
@@ -453,6 +509,8 @@ async function init() {
   const [branches, cfg] = await Promise.all([api('/api/branches'), api('/api/config')]);
   state.base = cfg.defaultBase;
   state.head = 'HEAD';
+  state.logBase = state.base;
+  state.logHead = state.head;
 
   const baseSel = document.getElementById('base-sel');
   const headSel = document.getElementById('head-sel');
@@ -468,8 +526,8 @@ async function init() {
   baseSel.value = state.base;
   headSel.value = state.head;
 
-  baseSel.addEventListener('change', () => { state.base = baseSel.value; loadFiles(); });
-  headSel.addEventListener('change', () => { state.head = headSel.value; loadFiles(); });
+  baseSel.addEventListener('change', () => { state.base = baseSel.value; state.logBase = baseSel.value; state.rangeStart = null; state.rangeEnd = null; loadFiles(); });
+  headSel.addEventListener('change', () => { state.head = headSel.value; state.logHead = headSel.value; state.rangeStart = null; state.rangeEnd = null; loadFiles(); });
 
   document.getElementById('show-resolved').addEventListener('change', e => {
     state.showResolved = e.target.checked;
@@ -533,16 +591,22 @@ function setupFilelistResize() {
 // ── Files ──────────────────────────────────────────────────────────────────
 
 async function loadFiles() {
+  const overlay = document.getElementById('loading-overlay');
+  overlay.classList.add('active');
+  // Yield to let the browser paint the overlay before heavy work
+  await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
   state.comments = await api('/api/comments');
   try {
     state.files = await api(`/api/diff?base=${encodeURIComponent(state.base)}&head=${encodeURIComponent(state.head)}&ignoreWhitespace=${state.ignoreWhitespace}`);
   } catch(e) {
     state.files = [];
-    document.getElementById('diffview').innerHTML = `<div id="diffview-placeholder">Error: ${e.message}</div>`;
+    document.getElementById('diffview-content').innerHTML = `<div id="diffview-placeholder">Error: ${e.message}</div>`;
+    overlay.classList.remove('active');
     return;
   }
   renderFileList();
-  renderAllDiffs();
+  await renderAllDiffs();
+  overlay.classList.remove('active');
 }
 
 function commentCountForFile(file) {
@@ -593,7 +657,7 @@ function renderFileList() {
       folderRow.className = 'folder-row';
       folderRow.style.paddingLeft = indent + 'px';
       const childFiles = countFiles(node.dirs[dirName]);
-      folderRow.innerHTML = `<span class="folder-arrow">▾</span> ${dirName} <span style="margin-left:auto;font-size:10px;color:var(--text-dim)">${childFiles}</span>`;
+      folderRow.innerHTML = `<span class="folder-arrow">▾</span> ${dirName} <span style="margin-left:auto;font-size:0.625rem;color:var(--text-dim)">${childFiles}</span>`;
 
       const childContainer = document.createElement('div');
       childContainer.className = 'folder-children';
@@ -647,7 +711,7 @@ function renderFileList() {
 // ── Diff rendering ─────────────────────────────────────────────────────────
 
 async function renderAllDiffs() {
-  const dv = document.getElementById('diffview');
+  const dv = document.getElementById('diffview-content');
   if (!state.files.length) {
     dv.innerHTML = '<div id="diffview-placeholder">No changes</div>';
     return;
@@ -803,7 +867,7 @@ function showCommentInput(tr, file, line, lineContent, side) {
   wrap.className = 'revue-comment-input-wrap';
   wrap.style.width = (getScrollParentWidth(tr) - 12) + 'px';
   wrap.innerHTML = `
-    <div style="font-size:11px;color:var(--text-dim)">Comment on line ${line}: <code style="color:var(--text)">${escHtml(lineContent.trim().slice(0,80))}</code></div>
+    <div style="font-size:0.6875rem;color:var(--text-dim)">Comment on line ${line}: <code style="color:var(--text)">${escHtml(lineContent.trim().slice(0,80))}</code></div>
     <textarea placeholder="Leave a comment…" autofocus></textarea>
     <div class="revue-comment-btn-row">
       <button class="revue-btn secondary cancel-btn">Cancel</button>
@@ -843,34 +907,92 @@ async function loadCommits() {
   const list = document.getElementById('commits-list');
   list.innerHTML = '<div style="padding:8px;color:var(--text-dim)">Loading…</div>';
   try {
-    const commits = await api(`/api/log?base=${encodeURIComponent(state.base)}&head=${encodeURIComponent(state.head)}`);
-    list.innerHTML = '';
-    if (!commits.length) { list.innerHTML = '<div style="padding:8px;color:var(--text-dim)">No commits</div>'; return; }
-    commits.forEach(c => {
-      const row = document.createElement('div');
-      row.className = 'commit-row';
-      row.innerHTML = `<span class="commit-hash">${escHtml(c.hash.slice(0, 8))}</span><span class="commit-subject" title="${escHtml(c.message)}">${escHtml(c.message)}</span>`;
-      if (c.hash.startsWith('~')) {
-        row.style.opacity = '0.6';
-        row.style.cursor = 'default';
-      } else {
-        row.addEventListener('click', (e) => {
-        if (e.shiftKey) {
-          state.head = c.hash;
-          document.getElementById('head-sel').value = c.hash;
-        } else {
-          state.base = c.hash;
-          document.getElementById('base-sel').value = c.hash;
-        }
-        document.getElementById('commits-panel').classList.remove('open');
-        loadFiles();
-      });
-      }
-      list.appendChild(row);
-    });
+    state.commits = await api(`/api/log?base=${encodeURIComponent(state.logBase)}&head=${encodeURIComponent(state.logHead)}`);
+    renderCommitList();
   } catch(e) {
     list.innerHTML = `<div style="padding:8px;color:var(--text-dim)">Error: ${e.message}</div>`;
   }
+}
+
+function renderCommitList() {
+  const list = document.getElementById('commits-list');
+  const commits = state.commits || [];
+  list.innerHTML = '';
+  if (!commits.length) { list.innerHTML = '<div style="padding:8px;color:var(--text-dim)">No commits</div>'; return; }
+
+  // Determine selected range indices
+  let startIdx = -1, endIdx = -1;
+  if (state.rangeStart) startIdx = commits.findIndex(c => c.hash === state.rangeStart);
+  if (state.rangeEnd) endIdx = commits.findIndex(c => c.hash === state.rangeEnd);
+  if (startIdx > endIdx && endIdx >= 0) { const t = startIdx; startIdx = endIdx; endIdx = t; }
+
+  commits.forEach((c, i) => {
+    const row = document.createElement('div');
+    row.className = 'commit-row';
+    if (i === startIdx || i === endIdx) row.classList.add('selected');
+    else if (startIdx >= 0 && endIdx >= 0 && i > startIdx && i < endIdx) row.classList.add('in-range');
+    row.innerHTML = `<span class="commit-hash">${escHtml(c.hash.slice(0, 8))}</span><span class="commit-subject" title="${escHtml(c.message)}">${escHtml(c.message)}</span>`;
+    if (c.hash.startsWith('~')) {
+      row.style.opacity = '0.6';
+      row.style.cursor = 'default';
+    } else {
+      row.addEventListener('click', (e) => {
+        e.preventDefault();
+        if (e.shiftKey) {
+          window.getSelection()?.removeAllRanges();
+          state.rangeEnd = c.hash;
+        } else {
+          state.rangeStart = c.hash;
+          state.rangeEnd = null;
+        }
+        applyCommitRange();
+        renderCommitList();
+      });
+    }
+    list.appendChild(row);
+  });
+}
+
+function applyCommitRange() {
+  const commits = state.commits || [];
+  const btn = document.getElementById('commits-btn');
+  const label = document.getElementById('commit-range-label');
+  if (!state.rangeStart) return;
+
+  if (!state.rangeEnd) {
+    // Single commit: diff from logBase...commit
+    state.base = state.logBase;
+    state.head = state.rangeStart;
+    btn.classList.add('range-active');
+    label.className = 'active';
+    label.innerHTML = `${state.rangeStart.slice(0, 8)} <span class="range-clear" title="Clear selection">✕</span>`;
+  } else {
+    // Range: find the older and newer commits
+    let si = commits.findIndex(c => c.hash === state.rangeStart);
+    let ei = commits.findIndex(c => c.hash === state.rangeEnd);
+    // commits are newest-first, so higher index = older
+    if (si > ei) { const t = si; si = ei; ei = t; }
+    const newerHash = commits[si].hash;
+    const olderHash = commits[ei].hash;
+    state.base = olderHash + '^';
+    state.head = newerHash;
+    btn.classList.add('range-active');
+    label.className = 'active';
+    label.innerHTML = `${olderHash.slice(0, 8)} → ${newerHash.slice(0, 8)} <span class="range-clear" title="Clear selection">✕</span>`;
+  }
+  label.querySelector('.range-clear')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    state.rangeStart = null;
+    state.rangeEnd = null;
+    state.base = state.logBase;
+    state.head = state.logHead;
+    btn.classList.remove('range-active');
+    label.className = '';
+    label.innerHTML = '';
+    loadFiles();
+  });
+  document.getElementById('commits-panel').classList.remove('open');
+  loadFiles();
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -885,7 +1007,7 @@ function encodeFileId(file) {
 
 // ── Boot ───────────────────────────────────────────────────────────────────
 init().catch(e => {
-  document.getElementById('diffview').innerHTML = `<div id="diffview-placeholder" style="color:#f47174">Failed to load: ${e.message}</div>`;
+  document.getElementById('diffview-content').innerHTML = `<div id="diffview-placeholder" style="color:#f47174">Failed to load: ${e.message}</div>`;
 });
 </script>
 </body>
