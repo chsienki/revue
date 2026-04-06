@@ -108,6 +108,28 @@ dotnet build
 dotnet run -- /path/to/repo
 ```
 
+## Browser inspection with Chrome DevTools MCP
+
+The user has a Chrome DevTools MCP server configured at `~/.copilot/mcp-config.json` that connects to Edge via `--browserUrl http://127.0.0.1:9222`.
+
+To launch revue with both user and Copilot able to inspect the same browser:
+
+1. **Launch Edge with remote debugging** using a separate profile and app mode (so it doesn't merge into the user's existing Edge, and gets its own taskbar icon):
+   ```powershell
+   $profileDir = "$env:USERPROFILE\.cache\revue-debug-profile"
+   Start-Process "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" -ArgumentList "--remote-debugging-port=9222","--user-data-dir=$profileDir","--app=http://127.0.0.1:7878"
+   ```
+2. **Start revue** as usual (`dotnet run -- /path/to/repo`)
+3. **Connect via MCP** — use `chrome-devtools-navigate_page` to `http://127.0.0.1:7878`
+
+This gives the user a fully normal Edge window (movable, resizable, F12 DevTools) while Copilot can inspect via MCP tools.
+
+**Important notes:**
+- Do NOT use `--isolated` — enterprise policy blocks sign-in on fresh profiles
+- Must use `--user-data-dir` to prevent merging into the user's existing Edge instance
+- The `--remote-debugging-port=9222` flag is only picked up when Edge launches as a new instance (not when merging)
+- If the debug port isn't responding, check that no other Edge instance claimed the profile first
+
 ## Common tasks for Copilot
 
 - **Add a new API endpoint**: Add a `app.MapGet(...)` call in `Program.cs`, add any new model to `Models.cs`

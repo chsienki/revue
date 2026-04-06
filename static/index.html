@@ -4,6 +4,8 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>revue</title>
+<link rel="icon" type="image/svg+xml" href="/icon.svg" />
+<link rel="manifest" href="/manifest.json" />
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/diff2html/bundles/css/diff2html.min.css" />
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11/styles/github-dark.min.css" />
 <script src="https://cdn.jsdelivr.net/npm/diff2html/bundles/js/diff2html-ui.min.js"></script>
@@ -34,26 +36,28 @@
     --del-word: #f4717466;
     --comment-bg: #3a3200;
     --comment-border: #cca700;
+    --comment-text: #cccccc;
   }
 
-  /* Light theme */
+  /* Light theme — GitHub-inspired clean white */
   [data-theme="light"] {
     --bg: #ffffff;
-    --bg2: #f3f3f3;
-    --bg3: #e8e8e8;
-    --border: #d1d1d1;
-    --text: #1e1e1e;
-    --text-dim: #6e6e6e;
-    --accent: #0066b8;
-    --accent2: #c2e0ff;
-    --add: #dafbe1;
-    --del: #ffebe9;
-    --add-line: #dafbe1;
-    --del-line: #ffebe9;
-    --add-word: #acf2bd;
-    --del-word: #fdb8c0;
-    --comment-bg: #fff8c5;
-    --comment-border: #d4a72c;
+    --bg2: #f0f2f5;
+    --bg3: #e2e6eb;
+    --border: #b0b8c4;
+    --text: #1a1a1a;
+    --text-dim: #4d5562;
+    --accent: #0969da;
+    --accent2: #ddf4ff;
+    --add: #d1f7d6;
+    --del: #ffdce0;
+    --add-line: #bcf0c4;
+    --del-line: #ffc8ce;
+    --add-word: #7ee89a;
+    --del-word: #ff818266;
+    --comment-bg: #fef3cd;
+    --comment-border: #c69500;
+    --comment-text: #1a1a1a;
   }
 
   body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 0.8125rem; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
@@ -317,8 +321,9 @@
   .d2h-file-header { background: var(--bg2) !important; border-color: var(--border) !important; color: var(--text) !important; position: sticky !important; top: 0 !important; z-index: 20 !important; }
   .d2h-file-wrapper { border-color: var(--border) !important; border-radius: var(--radius) !important; }
   .d2h-file-diff { position: relative; z-index: 1; background: var(--bg) !important; }
-  .d2h-diff-table { background: transparent !important; border-collapse: separate !important; border-spacing: 0 !important; }
+  .d2h-diff-table { background: transparent !important; border-collapse: separate !important; border-spacing: 0 !important; min-width: 100% !important; overflow: hidden !important; }
   .d2h-diff-table tr, .d2h-diff-table td, .d2h-diff-table tbody { border: none !important; }
+  .d2h-diff-tbody { border: none !important; }
   .d2h-file-side-diff { background: var(--bg) !important; overflow-x: auto !important; }
   .d2h-code-wrapper { background: transparent !important; }
   .d2h-code-linenumber, .d2h-code-side-linenumber { background: var(--bg2) !important; border: none !important; box-shadow: 1px 0 0 0 var(--border) !important; color: var(--text-dim) !important; cursor: pointer !important; position: sticky !important; left: 0; z-index: 2; }
@@ -335,6 +340,7 @@
   .d2h-code-line .hljs, .d2h-code-side-line .hljs { background: transparent !important; }
   .d2h-ins .hljs, .d2h-del .hljs { background: transparent !important; }
   .d2h-code-side-emptyplaceholder, .d2h-emptyplaceholder { background: var(--bg3) !important; border-color: var(--border) !important; }
+  .d2h-code-side-linenumber:empty, .d2h-code-linenumber:empty { background: var(--bg3) !important; box-shadow: none !important; display: table-cell !important; }
   .d2h-ins .d2h-code-linenumber, .d2h-ins .d2h-code-side-linenumber { background: var(--add-line) !important; box-shadow: 1px 0 0 0 var(--border) !important; }
   .d2h-del .d2h-code-linenumber, .d2h-del .d2h-code-side-linenumber { background: var(--del-line) !important; box-shadow: 1px 0 0 0 var(--border) !important; }
   .d2h-info { background: var(--bg3) !important; color: var(--text-dim) !important; border-color: var(--border) !important; }
@@ -344,7 +350,7 @@
 
   /* Comment threads injected into diff */
   .revue-comment-row { background: var(--comment-bg) !important; border-left: 3px solid var(--comment-border); }
-  .revue-comment-row td { padding: 0 !important; }
+  .revue-comment-row td { padding: 0 !important; width: 0; min-width: 0; overflow: visible; }
   .revue-comment-thread, .revue-comment-input-wrap {
     box-sizing: border-box;
     position: sticky;
@@ -360,7 +366,8 @@
     gap: 6px;
   }
   .revue-comment-item {
-    background: #2d2b00;
+    background: var(--comment-bg);
+    color: var(--comment-text);
     border: 1px solid var(--comment-border);
     border-radius: var(--radius);
     padding: 6px 10px;
@@ -554,7 +561,6 @@ async function apiPost(path, body) {
 async function apiDelete(path) {
   const r = await fetch(API + path, { method: 'DELETE' });
   if (!r.ok) throw new Error(`API error ${r.status}: ${await r.text()}`);
-  return r.json();
 }
 
 // ── Init ───────────────────────────────────────────────────────────────────
@@ -619,6 +625,7 @@ async function init() {
     state.theme = themeSel.value;
     savePref('theme', state.theme);
     applyTheme(state.theme);
+    renderAllDiffs();
   });
 
   await loadFiles();
@@ -789,7 +796,7 @@ async function renderAllDiffs() {
     outputFormat: state.diffLayout,
     renderNothingWhenEmpty: false,
     highlight: true,
-    colorScheme: 'dark',
+    colorScheme: document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark',
   });
   await ui.draw();
 
@@ -836,11 +843,12 @@ function injectComments(file, patch, container) {
         const threadRow = document.createElement('tr');
         threadRow.className = 'revue-comment-row';
         const colCount = tr.cells.length || 4;
-        threadRow.innerHTML = `<td colspan="${colCount}" class="revue-comment-thread"></td>`;
+        threadRow.innerHTML = `<td colspan="${colCount}"><div class="revue-comment-thread"></div></td>`;
         tr.after(threadRow);
-        const threadTd = threadRow.querySelector('.revue-comment-thread');
-        threadTd.style.width = (getScrollParentWidth(tr) - 12) + 'px';
-        comments.forEach(c => renderCommentItem(threadTd, c, file));
+        const threadDiv = threadRow.querySelector('.revue-comment-thread');
+        const scrollParent = tr.closest('.d2h-file-side-diff') || tr.closest('.d2h-code-wrapper');
+        if (scrollParent) threadDiv.style.width = scrollParent.clientWidth + 'px';
+        comments.forEach(c => renderCommentItem(threadDiv, c, file));
       }
     });
   });
@@ -926,7 +934,8 @@ function showCommentInput(tr, file, line, lineContent, side) {
   const td = inputRow.querySelector('td');
   const wrap = document.createElement('div');
   wrap.className = 'revue-comment-input-wrap';
-  wrap.style.width = (getScrollParentWidth(tr) - 12) + 'px';
+  const scrollParent = tr.closest('.d2h-file-side-diff') || tr.closest('.d2h-code-wrapper');
+  if (scrollParent) wrap.style.width = scrollParent.clientWidth + 'px';
   wrap.innerHTML = `
     <div style="font-size:0.6875rem;color:var(--text-dim)">Comment on line ${line}: <code style="color:var(--text)">${escHtml(lineContent.trim().slice(0,80))}</code></div>
     <textarea placeholder="Leave a comment…" autofocus></textarea>

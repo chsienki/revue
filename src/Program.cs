@@ -50,6 +50,22 @@ app.MapGet("/", () =>
     return Results.Bytes(LoadEmbeddedResource("index.html"), "text/html");
 });
 
+// GET /manifest.json
+app.MapGet("/manifest.json", () =>
+{
+    if (staticDir != null)
+        return Results.File(Path.Combine(staticDir, "manifest.json"), "application/manifest+json");
+    return Results.Bytes(LoadEmbeddedResource("manifest.json"), "application/manifest+json");
+});
+
+// GET /icon.svg
+app.MapGet("/icon.svg", () =>
+{
+    if (staticDir != null)
+        return Results.File(Path.Combine(staticDir, "icon.svg"), "image/svg+xml");
+    return Results.Bytes(LoadEmbeddedResource("icon.svg"), "image/svg+xml");
+});
+
 // GET /api/config
 app.MapGet("/api/config", () => Results.Json(new
 {
