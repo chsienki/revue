@@ -432,8 +432,10 @@
   ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
 
   #loading { padding: 20px; color: var(--text-dim); text-align: center; }
-  .show-resolved-wrap { padding: 6px 10px; display: flex; align-items: center; gap: 6px; font-size: 0.75rem; color: var(--text-dim); flex-shrink: 0; border-top: 1px solid var(--border); }
+  .show-resolved-wrap { padding: 6px 10px; display: flex; align-items: center; gap: 6px; font-size: 0.75rem; color: var(--text-dim); flex-shrink: 0; border-top: 1px solid var(--border); flex-wrap: wrap; }
   .show-resolved-wrap input { cursor: pointer; }
+  .delete-resolved-btn { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 0.6875rem; text-decoration: underline; padding: 0; margin-left: auto; }
+  .delete-resolved-btn:hover { color: var(--del-text, #f47174); }
 </style>
 </head>
 <body>
@@ -488,7 +490,8 @@
     <div id="filelist-items"></div>
     <div class="show-resolved-wrap">
       <input type="checkbox" id="show-resolved" checked />
-      <label for="show-resolved">Show resolved comments</label>
+      <label for="show-resolved">Show resolved</label>
+      <button class="delete-resolved-btn" id="delete-resolved">Delete resolved</button>
     </div>
     <div id="filelist-resize"></div>
   </div>
@@ -593,6 +596,16 @@ async function init() {
   document.getElementById('show-resolved').addEventListener('change', e => {
     state.showResolved = e.target.checked;
     savePref('showResolved', state.showResolved);
+    renderFileList();
+    renderAllDiffs();
+  });
+
+  document.getElementById('delete-resolved').addEventListener('click', async () => {
+    const resolved = state.comments.filter(c => c.resolved);
+    if (!resolved.length) return;
+    if (!confirm(`Delete ${resolved.length} resolved comment${resolved.length > 1 ? 's' : ''}?`)) return;
+    await Promise.all(resolved.map(c => apiDelete(`/api/comments/${c.id}`)));
+    state.comments = await api('/api/comments');
     renderFileList();
     renderAllDiffs();
   });
