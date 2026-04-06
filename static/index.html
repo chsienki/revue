@@ -827,16 +827,41 @@ function injectComments(file, patch, container) {
   if (!Object.keys(lineComments).length) return;
 
   // Find all line number cells and inject threads after their <tr>
+  const isSideBySide = !!container.querySelector('.d2h-file-side-diff');
   const rows = container.querySelectorAll('tr');
   rows.forEach(tr => {
-    const cells = tr.querySelectorAll('td.d2h-code-side-linenumber, td.d2h-code-linenumber');
-    cells.forEach(cell => {
-      const lineNum = parseInt(cell.textContent.trim(), 10);
-      if (isNaN(lineNum)) return;
-      const side = detectSide(cell);
-      const key = `${side}:${lineNum}`;
-      const comments = lineComments[key];
-      if (comments && !cell.dataset.injected) {
+    if (isSideBySide) {
+      // Side-by-side: each panel has its own linenumber cells
+      const cells = tr.querySelectorAll('td.d2h-code-side-linenumber');
+      cells.forEach(cell => {
+        const lineNum = parseInt(cell.textContent.trim(), 10);
+        if (isNaN(lineNum)) return;
+        const side = detectSide(cell);
+        const key = `${side}:${lineNum}`;
+        const comments = lineComments[key];
+        if (comments && !cell.dataset.injected) {
+          cell.dataset.injected = '1';
+          const threadRow = document.createElement('tr');
+          threadRow.className = 'revue-comment-row';
+          const colCount = tr.cells.length || 4;
+          threadRow.innerHTML = `<td colspan="${colCount}"><div class="revue-comment-thread"></div></td>`;
+          tr.after(threadRow);
+          const threadDiv = threadRow.querySelector('.revue-comment-thread');
+          comments.forEach(c => renderCommentItem(threadDiv, c, file));
+        }
+      });
+    } else {
+      // Inline/unified: single cell with .line-num1 (old) and .line-num2 (new)
+      const cell = tr.querySelector('td.d2h-code-linenumber');
+      if (!cell || cell.dataset.injected) return;
+      const num1El = cell.querySelector('.line-num1');
+      const num2El = cell.querySelector('.line-num2');
+      const oldNum = num1El ? parseInt(num1El.textContent.trim(), 10) : NaN;
+      const newNum = num2El ? parseInt(num2El.textContent.trim(), 10) : NaN;
+      const matched = [];
+      if (!isNaN(newNum) && lineComments[`right:${newNum}`]) matched.push(...lineComments[`right:${newNum}`]);
+      if (!isNaN(oldNum) && lineComments[`left:${oldNum}`]) matched.push(...lineComments[`left:${oldNum}`]);
+      if (matched.length) {
         cell.dataset.injected = '1';
         const threadRow = document.createElement('tr');
         threadRow.className = 'revue-comment-row';
@@ -844,9 +869,9 @@ function injectComments(file, patch, container) {
         threadRow.innerHTML = `<td colspan="${colCount}"><div class="revue-comment-thread"></div></td>`;
         tr.after(threadRow);
         const threadDiv = threadRow.querySelector('.revue-comment-thread');
-        comments.forEach(c => renderCommentItem(threadDiv, c, file));
+        matched.forEach(c => renderCommentItem(threadDiv, c, file));
       }
-    });
+    }
   });
 }
 
@@ -884,20 +909,41 @@ function attachLineClickHandlers(file, patch, container) {
   const lines = patch.split('\n');
   const newLineMap = buildLineMap(lines, 'new');
   const oldLineMap = buildLineMap(lines, 'old');
+  const isSideBySide = !!container.querySelector('.d2h-file-side-diff');
 
   container.querySelectorAll('td.d2h-code-side-linenumber, td.d2h-code-linenumber').forEach(cell => {
-    cell.addEventListener('click', () => {
-      const lineNum = parseInt(cell.textContent.trim(), 10);
-      if (isNaN(lineNum)) return;
-      const tr = cell.closest('tr');
-      if (!tr) return;
-      // Don't open if already has an open input
-      if (tr.nextSibling && tr.nextSibling.classList && tr.nextSibling.classList.contains('revue-input-row')) return;
-
-      const side = detectSide(cell);
-      const lineContent = (side === 'left' ? oldLineMap[lineNum] : newLineMap[lineNum]) || '';
-      showCommentInput(tr, file, lineNum, lineContent, side);
-    });
+    if (isSideBySide) {
+      cell.addEventListener('click', () => {
+        const lineNum = parseInt(cell.textContent.trim(), 10);
+        if (isNaN(lineNum)) return;
+        const tr = cell.closest('tr');
+        if (!tr) return;
+        if (tr.nextSibling?.classList?.contains('revue-input-row')) return;
+        const side = detectSide(cell);
+        const lineContent = (side === 'left' ? oldLineMap[lineNum] : newLineMap[lineNum]) || '';
+        showCommentInput(tr, file, lineNum, lineContent, side);
+      });
+    } else {
+      // Inline: attach click to individual .line-num1 / .line-num2 divs
+      const num1 = cell.querySelector('.line-num1');
+      const num2 = cell.querySelector('.line-num2');
+      const handler = (numEl, side) => {
+        if (!numEl) return;
+        numEl.style.cursor = 'pointer';
+        numEl.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const lineNum = parseInt(numEl.textContent.trim(), 10);
+          if (isNaN(lineNum)) return;
+          const tr = cell.closest('tr');
+          if (!tr) return;
+          if (tr.nextSibling?.classList?.contains('revue-input-row')) return;
+          const lineContent = (side === 'left' ? oldLineMap[lineNum] : newLineMap[lineNum]) || '';
+          showCommentInput(tr, file, lineNum, lineContent, side);
+        });
+      };
+      handler(num1, 'left');
+      handler(num2, 'right');
+    }
   });
 }
 
