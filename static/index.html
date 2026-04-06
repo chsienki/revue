@@ -841,29 +841,65 @@ function injectComments(file, patch, container) {
 
   // Find all line number cells and inject threads after their <tr>
   const isSideBySide = !!container.querySelector('.d2h-file-side-diff');
-  const rows = container.querySelectorAll('tr');
-  rows.forEach(tr => {
-    if (isSideBySide) {
-      // Side-by-side: each panel has its own linenumber cells
-      const cells = tr.querySelectorAll('td.d2h-code-side-linenumber');
-      cells.forEach(cell => {
+  if (isSideBySide) {
+    const panels = container.querySelectorAll('.d2h-file-side-diff');
+    const leftTbody = panels[0].querySelector('tbody');
+    const rightTbody = panels[1].querySelector('tbody');
+    const leftRows = Array.from(leftTbody.querySelectorAll(':scope > tr'));
+    const rightRows = Array.from(rightTbody.querySelectorAll(':scope > tr'));
+
+    // Process both sides, collecting insertions to apply in reverse order
+    const insertions = [];
+    for (let i = 0; i < leftRows.length; i++) {
+      for (const [rows, side] of [[leftRows, 'left'], [rightRows, 'right']]) {
+        const tr = rows[i];
+        const cell = tr.querySelector('td.d2h-code-side-linenumber');
+        if (!cell) continue;
         const lineNum = parseInt(cell.textContent.trim(), 10);
-        if (isNaN(lineNum)) return;
-        const side = detectSide(cell);
+        if (isNaN(lineNum)) continue;
         const key = `${side}:${lineNum}`;
         const comments = lineComments[key];
         if (comments && !cell.dataset.injected) {
           cell.dataset.injected = '1';
-          const threadRow = document.createElement('tr');
-          threadRow.className = 'revue-comment-row';
-          const colCount = tr.cells.length || 4;
-          threadRow.innerHTML = `<td colspan="${colCount}"><div class="revue-comment-thread"></div></td>`;
-          tr.after(threadRow);
-          const threadDiv = threadRow.querySelector('.revue-comment-thread');
-          comments.forEach(c => renderCommentItem(threadDiv, c, file));
+          insertions.push({ index: i, side, comments });
         }
-      });
-    } else {
+      }
+    }
+
+    // Apply insertions in reverse so indices stay valid
+    insertions.sort((a, b) => b.index - a.index);
+    for (const ins of insertions) {
+      const leftTr = leftTbody.querySelectorAll(':scope > tr')[ins.index];
+      const rightTr = rightTbody.querySelectorAll(':scope > tr')[ins.index];
+      const commentRow = document.createElement('tr');
+      commentRow.className = 'revue-comment-row';
+      const colCount = leftTr.cells.length || 2;
+      commentRow.innerHTML = `<td colspan="${colCount}"><div class="revue-comment-thread"></div></td>`;
+
+      const spacerRow = document.createElement('tr');
+      spacerRow.className = 'revue-comment-row revue-spacer-row';
+      spacerRow.innerHTML = `<td colspan="${colCount}"></td>`;
+
+      if (ins.side === 'left') {
+        leftTr.after(commentRow);
+        rightTr.after(spacerRow);
+      } else {
+        rightTr.after(commentRow);
+        leftTr.after(spacerRow);
+      }
+
+      const threadDiv = commentRow.querySelector('.revue-comment-thread');
+      ins.comments.forEach(c => renderCommentItem(threadDiv, c, file));
+
+      // Sync spacer height with comment row
+      const syncHeight = () => { spacerRow.style.height = commentRow.offsetHeight + 'px'; };
+      syncHeight();
+      const ro = new ResizeObserver(syncHeight);
+      ro.observe(commentRow);
+    }
+  } else {
+    const rows = container.querySelectorAll('tr');
+    rows.forEach(tr => {
       // Inline/unified: single cell with .line-num1 (old) and .line-num2 (new)
       const cell = tr.querySelector('td.d2h-code-linenumber');
       if (!cell || cell.dataset.injected) return;
@@ -884,8 +920,8 @@ function injectComments(file, patch, container) {
         const threadDiv = threadRow.querySelector('.revue-comment-thread');
         matched.forEach(c => renderCommentItem(threadDiv, c, file));
       }
-    }
-  });
+    });
+  }
 }
 
 function renderCommentItem(container, c, file) {
@@ -997,12 +1033,47 @@ function buildLineMap(lines, which) {
   return map;
 }
 
+function findOppositeRow(tr) {
+  const panel = tr.closest('.d2h-file-side-diff');
+  if (!panel) return null;
+  const wrapper = panel.closest('.d2h-file-wrapper');
+  const panels = wrapper.querySelectorAll('.d2h-file-side-diff');
+  const otherPanel = panel === panels[0] ? panels[1] : panels[0];
+  const myRows = Array.from(panel.querySelectorAll('tbody > tr'));
+  const otherRows = Array.from(otherPanel.querySelectorAll('tbody > tr'));
+  const idx = myRows.indexOf(tr);
+  return idx >= 0 && idx < otherRows.length ? otherRows[idx] : null;
+}
+
+function insertWithSpacer(tr, newRow) {
+  const oppTr = findOppositeRow(tr);
+  tr.after(newRow);
+  if (oppTr) {
+    const spacer = document.createElement('tr');
+    spacer.className = 'revue-comment-row revue-spacer-row';
+    spacer.innerHTML = `<td colspan="${oppTr.cells.length || 2}"></td>`;
+    oppTr.after(spacer);
+    const syncHeight = () => { spacer.style.height = newRow.offsetHeight + 'px'; };
+    syncHeight();
+    const ro = new ResizeObserver(syncHeight);
+    ro.observe(newRow);
+    // Store spacer ref for cleanup
+    newRow._spacerRow = spacer;
+    newRow._resizeObserver = ro;
+  }
+}
+
 function showCommentInput(tr, file, line, lineContent, side) {
   const inputRow = document.createElement('tr');
   inputRow.className = 'revue-input-row revue-comment-row';
   const colCount = tr.cells.length || 4;
   inputRow.innerHTML = `<td colspan="${colCount}"></td>`;
-  tr.after(inputRow);
+  const isSxS = !!tr.closest('.d2h-file-side-diff');
+  if (isSxS) {
+    insertWithSpacer(tr, inputRow);
+  } else {
+    tr.after(inputRow);
+  }
   const td = inputRow.querySelector('td');
   const wrap = document.createElement('div');
   wrap.className = 'revue-comment-input-wrap';
@@ -1017,13 +1088,18 @@ function showCommentInput(tr, file, line, lineContent, side) {
   td.appendChild(wrap);
   wrap.querySelector('textarea').focus();
 
-  wrap.querySelector('.cancel-btn').addEventListener('click', () => inputRow.remove());
+  const cleanup = () => {
+    if (inputRow._resizeObserver) inputRow._resizeObserver.disconnect();
+    if (inputRow._spacerRow) inputRow._spacerRow.remove();
+    inputRow.remove();
+  };
+  wrap.querySelector('.cancel-btn').addEventListener('click', cleanup);
   wrap.querySelector('.save-btn').addEventListener('click', async () => {
     const body = wrap.querySelector('textarea').value.trim();
     if (!body) return;
     await apiPost('/api/comments', { file, line, line_content: lineContent, base: state.base, head: state.head, side, body });
     state.comments = await api('/api/comments');
-    inputRow.remove();
+    cleanup();
     renderFileList();
     renderAllDiffs();
   });
