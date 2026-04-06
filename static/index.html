@@ -833,14 +833,11 @@ function injectComments(file, patch, container) {
     cells.forEach(cell => {
       const lineNum = parseInt(cell.textContent.trim(), 10);
       if (isNaN(lineNum)) return;
-      // determine side from class
-      const side = cell.closest('.d2h-file-side-diff') ?
-        (cell.closest('.d2h-file-side-diff:first-of-type') ? 'left' : 'right') : 'right';
-      const key = `right:${lineNum}`; // simplification: use right side
-      const comments = lineComments[key] || lineComments[`left:${lineNum}`];
-      if (comments && !tr.dataset.injected) {
-        tr.dataset.injected = '1';
-        const insertRow = tr.insertAdjacentElement ? tr : tr;
+      const side = detectSide(cell);
+      const key = `${side}:${lineNum}`;
+      const comments = lineComments[key];
+      if (comments && !cell.dataset.injected) {
+        cell.dataset.injected = '1';
         const threadRow = document.createElement('tr');
         threadRow.className = 'revue-comment-row';
         const colCount = tr.cells.length || 4;
@@ -885,7 +882,8 @@ function renderCommentItem(container, c, file) {
 
 function attachLineClickHandlers(file, patch, container) {
   const lines = patch.split('\n');
-  const lineMap = buildLineMap(lines);
+  const newLineMap = buildLineMap(lines, 'new');
+  const oldLineMap = buildLineMap(lines, 'old');
 
   container.querySelectorAll('td.d2h-code-side-linenumber, td.d2h-code-linenumber').forEach(cell => {
     cell.addEventListener('click', () => {
@@ -896,24 +894,45 @@ function attachLineClickHandlers(file, patch, container) {
       // Don't open if already has an open input
       if (tr.nextSibling && tr.nextSibling.classList && tr.nextSibling.classList.contains('revue-input-row')) return;
 
-      const lineContent = lineMap[lineNum] || '';
-      showCommentInput(tr, file, lineNum, lineContent, 'right');
+      const side = detectSide(cell);
+      const lineContent = (side === 'left' ? oldLineMap[lineNum] : newLineMap[lineNum]) || '';
+      showCommentInput(tr, file, lineNum, lineContent, side);
     });
   });
 }
 
-function buildLineMap(lines) {
+function detectSide(cell) {
+  // Side-by-side: check which panel the cell is in
+  const sidePanel = cell.closest('.d2h-file-side-diff');
+  if (sidePanel) {
+    const wrapper = sidePanel.closest('.d2h-file-wrapper');
+    const panels = wrapper.querySelectorAll('.d2h-file-side-diff');
+    return sidePanel === panels[0] ? 'left' : 'right';
+  }
+  // Unified: check if the cell is the old (first) or new (second) line number column
+  const tr = cell.closest('tr');
+  const lineNumCells = tr.querySelectorAll('td.d2h-code-linenumber');
+  if (lineNumCells.length >= 2 && cell === lineNumCells[0]) return 'left';
+  return 'right';
+}
+
+function buildLineMap(lines, which) {
   const map = {};
-  let newLine = 0;
+  let oldLine = 0, newLine = 0;
   lines.forEach(l => {
     if (l.startsWith('@@')) {
-      const m = l.match(/@@ [^+]*\+(\d+)/);
-      if (m) newLine = parseInt(m[1], 10) - 1;
+      const m = l.match(/@@ -(\d+)(?:,\d+)? \+(\d+)/);
+      if (m) { oldLine = parseInt(m[1], 10) - 1; newLine = parseInt(m[2], 10) - 1; }
     } else if (l.startsWith('+')) {
       newLine++;
-      map[newLine] = l.slice(1);
-    } else if (!l.startsWith('-')) {
+      if (which === 'new') map[newLine] = l.slice(1);
+    } else if (l.startsWith('-')) {
+      oldLine++;
+      if (which === 'old') map[oldLine] = l.slice(1);
+    } else {
+      oldLine++;
       newLine++;
+      map[which === 'old' ? oldLine : newLine] = l.slice(1);
     }
   });
   return map;
