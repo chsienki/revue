@@ -324,7 +324,7 @@
   .d2h-diff-table { background: transparent !important; border-collapse: separate !important; border-spacing: 0 !important; min-width: 100% !important; }
   .d2h-diff-table tr, .d2h-diff-table td, .d2h-diff-table tbody { border: none !important; }
   .d2h-diff-tbody { border: none !important; }
-  .d2h-file-side-diff { background: var(--bg) !important; overflow-x: auto !important; }
+  .d2h-file-side-diff { background: var(--bg) !important; overflow-x: auto !important; container-type: inline-size !important; }
   .d2h-code-wrapper { background: transparent !important; }
   .d2h-code-linenumber, .d2h-code-side-linenumber { background: var(--bg2) !important; border: none !important; box-shadow: 1px 0 0 0 var(--border) !important; color: var(--text-dim) !important; cursor: pointer !important; position: sticky !important; left: 0; z-index: 2; }
   .d2h-code-linenumber::after, .d2h-code-side-linenumber::after { content: ''; position: absolute; top: -1px; bottom: -1px; left: 0; right: 0; background: inherit; z-index: -1; }
@@ -356,6 +356,7 @@
     position: sticky;
     left: 4px;
     margin: 4px 0;
+    width: calc(100cqw - 12px);
   }
   .revue-comment-thread {
     padding: 8px 12px;
@@ -846,8 +847,6 @@ function injectComments(file, patch, container) {
         threadRow.innerHTML = `<td colspan="${colCount}"><div class="revue-comment-thread"></div></td>`;
         tr.after(threadRow);
         const threadDiv = threadRow.querySelector('.revue-comment-thread');
-        const scrollParent = tr.closest('.d2h-file-side-diff') || tr.closest('.d2h-code-wrapper');
-        if (scrollParent) threadDiv.style.width = scrollParent.clientWidth + 'px';
         comments.forEach(c => renderCommentItem(threadDiv, c, file));
       }
     });
@@ -920,11 +919,6 @@ function buildLineMap(lines) {
   return map;
 }
 
-function getScrollParentWidth(el) {
-  let p = el.closest('.d2h-code-wrapper') || el.closest('.d2h-file-side-diff');
-  return p ? p.clientWidth : document.getElementById('diffview').clientWidth;
-}
-
 function showCommentInput(tr, file, line, lineContent, side) {
   const inputRow = document.createElement('tr');
   inputRow.className = 'revue-input-row revue-comment-row';
@@ -934,8 +928,6 @@ function showCommentInput(tr, file, line, lineContent, side) {
   const td = inputRow.querySelector('td');
   const wrap = document.createElement('div');
   wrap.className = 'revue-comment-input-wrap';
-  const scrollParent = tr.closest('.d2h-file-side-diff') || tr.closest('.d2h-code-wrapper');
-  if (scrollParent) wrap.style.width = scrollParent.clientWidth + 'px';
   wrap.innerHTML = `
     <div style="font-size:0.6875rem;color:var(--text-dim)">Comment on line ${line}: <code style="color:var(--text)">${escHtml(lineContent.trim().slice(0,80))}</code></div>
     <textarea placeholder="Leave a comment…" autofocus></textarea>
