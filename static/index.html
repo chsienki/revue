@@ -701,11 +701,13 @@ async function loadFiles() {
   }
   renderFileList();
   await renderAllDiffs();
+  renderFileList(); // re-render with accurate badge counts after injection
   overlay.classList.remove('active');
 }
 
 function commentCountForFile(file) {
-  return state.comments.filter(c => c.file === file && (state.showResolved || !c.resolved)).length;
+  const ids = state._injectedIds;
+  return state.comments.filter(c => c.file === file && (state.showResolved || !c.resolved) && (!ids || ids.has(c.id))).length;
 }
 
 function renderFileList() {
@@ -803,15 +805,15 @@ function renderFileList() {
   }
 
   // Show orphaned comment count in file tree as a virtual entry
-  const diffFiles = new Set(state.files.map(f => f.file));
-  const orphaned = state.comments.filter(c => !diffFiles.has(c.file) && (state.showResolved || !c.resolved));
-  if (orphaned.length) {
+  const ids = state._injectedIds;
+  const orphanedForTree = state.comments.filter(c => (state.showResolved || !c.resolved) && (!ids || !ids.has(c.id)));
+  if (orphanedForTree.length) {
     const div = document.createElement('div');
     div.className = 'file-item orphaned-file-item' + (state.currentFile === '__orphaned__' ? ' active' : '');
     div.style.paddingLeft = '26px';
     div.innerHTML = `
       <span class="file-name">Other comments</span>
-      <span class="comment-badge">${orphaned.length}</span>
+      <span class="comment-badge">${orphanedForTree.length}</span>
     `;
     div.addEventListener('click', () => {
       state.currentFile = '__orphaned__';
@@ -873,16 +875,19 @@ async function renderAllDiffs() {
 
   // Add anchor IDs to each file wrapper and attach per-file handlers
   const fileWrappers = target.querySelectorAll('.d2h-file-wrapper');
+  const injectedIds = new Set();
   state.files.forEach((f, i) => {
     if (i >= fileWrappers.length) return;
     fileWrappers[i].id = `file-${encodeFileId(f.file)}`;
-    injectComments(f.file, f.patch, fileWrappers[i]);
+    const injected = injectComments(f.file, f.patch, fileWrappers[i]);
+    injected.forEach(id => injectedIds.add(id));
     attachLineClickHandlers(f.file, f.patch, fileWrappers[i]);
   });
+  state._injectedIds = injectedIds;
 
-  // Render orphaned comments as a virtual file at the end
-  const diffFileSet = new Set(state.files.map(f => f.file));
-  const orphaned = state.comments.filter(c => !diffFileSet.has(c.file) && (state.showResolved || !c.resolved));
+  // Orphaned = comments on files not in diff OR comments on diff files but not on visible lines
+  const visibleComments = state.comments.filter(c => (state.showResolved || !c.resolved));
+  const orphaned = visibleComments.filter(c => !injectedIds.has(c.id));
   if (orphaned.length) {
     const section = document.createElement('div');
     section.className = 'd2h-file-wrapper orphaned-wrapper';
@@ -897,7 +902,7 @@ async function renderAllDiffs() {
 
     let html = `<div class="d2h-file-header" style="position:sticky;top:0;z-index:20">
       <span style="font-weight:600">Other comments</span>
-      <span style="margin-left:8px;color:var(--text-dim);font-size:0.75rem">${orphaned.length} comment${orphaned.length > 1 ? 's' : ''} on files not in this diff</span>
+      <span style="margin-left:8px;color:var(--text-dim);font-size:0.75rem">${orphaned.length} comment${orphaned.length > 1 ? 's' : ''} not visible in the diff</span>
       <button class="delete-resolved-btn" id="delete-all-orphaned" style="margin-left:auto;font-size:0.75rem">Delete all</button>
     </div><div class="orphaned-comments-list">`;
 
@@ -953,6 +958,7 @@ async function renderAllDiffs() {
 // ── Comment injection ──────────────────────────────────────────────────────
 
 function injectComments(file, patch, container) {
+  const injectedIds = [];
   const lineComments = {};
   state.comments
     .filter(c => c.file === file)
@@ -963,7 +969,7 @@ function injectComments(file, patch, container) {
       lineComments[key].push(c);
     });
 
-  if (!Object.keys(lineComments).length) return;
+  if (!Object.keys(lineComments).length) return injectedIds;
 
   // Find all line number cells and inject threads after their <tr>
   const isSideBySide = !!container.querySelector('.d2h-file-side-diff');
@@ -1015,7 +1021,7 @@ function injectComments(file, patch, container) {
       }
 
       const threadDiv = commentRow.querySelector('.revue-comment-thread');
-      ins.comments.forEach(c => renderCommentItem(threadDiv, c, file));
+      ins.comments.forEach(c => { injectedIds.push(c.id); renderCommentItem(threadDiv, c, file); });
 
       // Sync spacer height with comment row
       const syncHeight = () => { spacerRow.style.height = commentRow.offsetHeight + 'px'; };
@@ -1044,10 +1050,11 @@ function injectComments(file, patch, container) {
         threadRow.innerHTML = `<td colspan="${colCount}"><div class="revue-comment-thread"></div></td>`;
         tr.after(threadRow);
         const threadDiv = threadRow.querySelector('.revue-comment-thread');
-        matched.forEach(c => renderCommentItem(threadDiv, c, file));
+        matched.forEach(c => { injectedIds.push(c.id); renderCommentItem(threadDiv, c, file); });
       }
     });
   }
+  return injectedIds;
 }
 
 function renderCommentItem(container, c, file) {
