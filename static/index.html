@@ -351,8 +351,7 @@
   .d2h-tag { background: var(--bg3) !important; color: var(--text-dim) !important; }
 
   /* Expand context button on hunk headers */
-  .revue-expand-btn { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 0.75rem; padding: 0 4px; line-height: 1; opacity: 0.7; }
-  .revue-expand-btn:hover { opacity: 1; background: var(--accent); color: #fff; border-radius: var(--radius); }
+  .revue-expand-btn { background: none; border: none; color: inherit; cursor: pointer; font-size: 0.75rem; padding: 0; line-height: 1; }
 
   /* Comment threads injected into diff */
   .revue-comment-row { background: var(--comment-bg) !important; border-left: 3px solid var(--comment-border); }
@@ -1209,12 +1208,18 @@ function attachExpandButtons(file, container) {
     return btn;
   };
 
+  const setupExpandCell = (cell, arrow) => {
+    cell.appendChild(makeBtn(arrow));
+    cell.title = 'Show more context';
+    cell.addEventListener('click', expandHandler);
+  };
+
   // Add ↕ buttons on @@ hunk header line number cells
   const numCellSelector = isSxS
     ? '.d2h-file-side-diff:first-child td.d2h-code-side-linenumber.d2h-info'
     : 'td.d2h-code-linenumber.d2h-info';
   container.querySelectorAll(numCellSelector).forEach(numCell => {
-    numCell.appendChild(makeBtn('↕'));
+    setupExpandCell(numCell, '↕');
   });
 
   // Add ↓ button at the bottom of the file in line number position
@@ -1228,8 +1233,8 @@ function attachExpandButtons(file, container) {
       if (!lastRow.querySelector('.d2h-info')) {
         const expandRow = document.createElement('tr');
         const numTd = document.createElement('td');
-        numTd.style.cssText = 'background:var(--bg3);text-align:center;padding:0';
-        numTd.appendChild(makeBtn('↓'));
+        numTd.style.cssText = 'background:var(--bg3);text-align:center;padding:0;cursor:pointer';
+        setupExpandCell(numTd, '↓');
         expandRow.appendChild(numTd);
         // Fill remaining cells
         const remaining = (lastRow.cells.length || 2) - 1;
