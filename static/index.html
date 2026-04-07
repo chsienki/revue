@@ -624,7 +624,8 @@ async function init() {
   document.getElementById('delete-resolved').addEventListener('click', async () => {
     const resolved = state.comments.filter(c => c.resolved);
     if (!resolved.length) return;
-    await Promise.all(resolved.map(c => apiDelete(`/api/comments/${c.id}`)));
+    if (!confirm(`Delete ${resolved.length} resolved comment${resolved.length > 1 ? 's' : ''}?`)) return;
+    await apiPost('/api/comments/delete-batch', resolved.map(c => c.id));
     state.comments = await api('/api/comments');
     renderFileList();
     await renderAllDiffs();
@@ -936,7 +937,8 @@ async function renderAllDiffs() {
 
     // Wire up buttons
     section.querySelector('#delete-all-orphaned').addEventListener('click', async () => {
-      await Promise.all(orphaned.map(c => apiDelete(`/api/comments/${c.id}`)));
+      if (!confirm(`Delete ${orphaned.length} orphaned comment${orphaned.length > 1 ? 's' : ''}?`)) return;
+      await apiPost('/api/comments/delete-batch', orphaned.map(c => c.id));
       state.comments = await api('/api/comments');
       renderFileList();
       await renderAllDiffs();

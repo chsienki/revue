@@ -271,6 +271,21 @@ app.MapDelete("/api/comments/{id}", (string id) =>
     return Results.Ok();
 });
 
+// POST /api/comments/delete-batch
+app.MapPost("/api/comments/delete-batch", async (HttpRequest req) =>
+{
+    List<string>? ids;
+    try { ids = await req.ReadFromJsonAsync<List<string>>(jsonOpts); }
+    catch { return Results.BadRequest("Invalid JSON"); }
+    if (ids == null || ids.Count == 0) return Results.BadRequest("Empty list");
+
+    var comments = CommentsStore.Load(repoRoot);
+    var idSet = new HashSet<string>(ids);
+    comments.RemoveAll(c => idSet.Contains(c.Id));
+    CommentsStore.Save(repoRoot, comments);
+    return Results.Ok();
+});
+
 // ── Start ────────────────────────────────────────────────────────────────────
 Console.WriteLine($"revue  →  {url}");
 Console.WriteLine($"repo   →  {repoRoot}");
