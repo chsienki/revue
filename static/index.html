@@ -351,8 +351,8 @@
   .d2h-tag { background: var(--bg3) !important; color: var(--text-dim) !important; }
 
   /* Expand context button on hunk headers */
-  .revue-expand-btn { background: none; border: 1px solid var(--border); color: var(--accent); cursor: pointer; font-size: 0.625rem; padding: 1px 6px; border-radius: var(--radius); margin-left: 8px; font-family: var(--font); }
-  .revue-expand-btn:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .revue-expand-btn { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 0.75rem; padding: 0 4px; line-height: 1; opacity: 0.7; }
+  .revue-expand-btn:hover { opacity: 1; background: var(--accent); color: #fff; border-radius: var(--radius); }
 
   /* Comment threads injected into diff */
   .revue-comment-row { background: var(--comment-bg) !important; border-left: 3px solid var(--comment-border); }
@@ -1200,26 +1200,24 @@ function attachExpandButtons(file, container) {
     if (target) target.scrollIntoView({ block: 'start' });
   };
 
-  const makeBtn = (label) => {
+  const makeBtn = (arrow) => {
     const btn = document.createElement('button');
     btn.className = 'revue-expand-btn';
-    btn.textContent = label;
+    btn.textContent = arrow;
+    btn.title = 'Show more context';
     btn.addEventListener('click', expandHandler);
     return btn;
   };
 
-  // In SxS, only add to the first (left) panel's info rows to avoid duplicates
-  const infoSelector = isSxS
-    ? '.d2h-file-side-diff:first-child .d2h-info'
-    : '.d2h-info';
-  container.querySelectorAll(infoSelector).forEach(infoRow => {
-    const codeCell = infoRow.querySelector('.d2h-code-side-line, .d2h-code-line');
-    if (!codeCell) return;
-    codeCell.appendChild(makeBtn('⊕ Show more context'));
+  // Add ↕ buttons on @@ hunk header line number cells
+  const numCellSelector = isSxS
+    ? '.d2h-file-side-diff:first-child td.d2h-code-side-linenumber.d2h-info'
+    : 'td.d2h-code-linenumber.d2h-info';
+  container.querySelectorAll(numCellSelector).forEach(numCell => {
+    numCell.appendChild(makeBtn('↕'));
   });
 
-  // Add expand row at the bottom of the file
-  // In SxS, only add to the first (left) tbody
+  // Add ↓ button at the bottom of the file in line number position
   const tbody = isSxS
     ? container.querySelector('.d2h-file-side-diff:first-child tbody')
     : container.querySelector('tbody');
@@ -1229,9 +1227,18 @@ function attachExpandButtons(file, container) {
       const lastRow = rows[rows.length - 1];
       if (!lastRow.querySelector('.d2h-info')) {
         const expandRow = document.createElement('tr');
-        const colCount = lastRow.cells.length || 2;
-        expandRow.innerHTML = `<td colspan="${colCount}" style="background:var(--bg3);text-align:center;padding:2px 0"></td>`;
-        expandRow.querySelector('td').appendChild(makeBtn('⊕ Show more context'));
+        const numTd = document.createElement('td');
+        numTd.style.cssText = 'background:var(--bg3);text-align:center;padding:0';
+        numTd.appendChild(makeBtn('↓'));
+        expandRow.appendChild(numTd);
+        // Fill remaining cells
+        const remaining = (lastRow.cells.length || 2) - 1;
+        if (remaining > 0) {
+          const fillerTd = document.createElement('td');
+          fillerTd.colSpan = remaining;
+          fillerTd.style.cssText = 'background:var(--bg3);padding:0';
+          expandRow.appendChild(fillerTd);
+        }
         tbody.appendChild(expandRow);
       }
     }
