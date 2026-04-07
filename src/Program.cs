@@ -223,12 +223,39 @@ app.MapPost("/api/comments", async (HttpRequest req) =>
         Head: cr.Head,
         Side: cr.Side,
         Body: cr.Body,
+        Author: cr.Author ?? "user",
         Created: DateTime.UtcNow.ToString("o"),
-        Resolved: cr.Resolved
+        Resolved: cr.Resolved,
+        Replies: []
     );
     comments.Add(comment);
     CommentsStore.Save(repoRoot, comments);
     return Results.Json(comment, jsonOpts);
+});
+
+// POST /api/comments/{id}/replies
+app.MapPost("/api/comments/{id}/replies", async (string id, HttpRequest req) =>
+{
+    ReplyRequest? rr;
+    try { rr = await req.ReadFromJsonAsync<ReplyRequest>(jsonOpts); }
+    catch { return Results.BadRequest("Invalid JSON"); }
+    if (rr == null) return Results.BadRequest("Empty body");
+
+    var comments = CommentsStore.Load(repoRoot);
+    var idx = comments.FindIndex(c => c.Id == id);
+    if (idx < 0) return Results.NotFound();
+
+    var reply = new Reply(
+        Id: Guid.NewGuid().ToString(),
+        Author: rr.Author,
+        Body: rr.Body,
+        Created: DateTime.UtcNow.ToString("o")
+    );
+    var replies = comments[idx].Replies ?? [];
+    replies.Add(reply);
+    comments[idx] = comments[idx] with { Replies = replies };
+    CommentsStore.Save(repoRoot, comments);
+    return Results.Json(reply, jsonOpts);
 });
 
 // DELETE /api/comments/{id}

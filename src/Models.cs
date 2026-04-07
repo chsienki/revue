@@ -1,5 +1,12 @@
 namespace Revue;
 
+public record Reply(
+    string Id,
+    string Author,
+    string Body,
+    string Created
+);
+
 public record Comment(
     string Id,
     string File,
@@ -9,8 +16,10 @@ public record Comment(
     string Head,
     string Side,
     string Body,
+    string Author,
     string Created,
-    bool Resolved
+    bool Resolved,
+    List<Reply>? Replies
 );
 
 public record CommentRequest(
@@ -22,7 +31,13 @@ public record CommentRequest(
     string Head,
     string Side,
     string Body,
+    string? Author,
     bool Resolved
+);
+
+public record ReplyRequest(
+    string Author,
+    string Body
 );
 
 public record DiffFile(string File, string Patch, int Additions, int Deletions);

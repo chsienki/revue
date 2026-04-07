@@ -73,8 +73,17 @@ skill/
   "head": "HEAD",
   "side": "right",
   "body": "Why is this needed?",
+  "author": "user",
   "created": "2026-04-02T00:00:00Z",
-  "resolved": false
+  "resolved": false,
+  "replies": [
+    {
+      "id": "uuid",
+      "author": "copilot",
+      "body": "This initializes the Foo subsystem.",
+      "created": "2026-04-02T00:01:00Z"
+    }
+  ]
 }
 ```
 
@@ -88,7 +97,8 @@ All return JSON (camelCase). Errors return `Results.Problem(...)`.
 - `GET /api/diff?base=X&head=Y&ignoreWhitespace=bool` → `DiffFile[]`
 - `GET /api/file-diff?base=X&head=Y&file=F&ignoreWhitespace=bool` → `DiffFile`
 - `GET /api/comments` → `Comment[]`
-- `POST /api/comments` → accepts `CommentRequest`, returns `Comment`
+- `POST /api/comments` → accepts `CommentRequest` (include `author`), returns `Comment`
+- `POST /api/comments/{id}/replies` → accepts `{ author, body }`, returns `Reply`
 - `DELETE /api/comments/{id}` → 200 or 404
 
 ## Frontend conventions

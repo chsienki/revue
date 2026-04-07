@@ -90,10 +90,36 @@ The comments file is at `.revue/comments.json` (relative to git repo root). Each
   "head": "HEAD",
   "side": "right",
   "body": "Should this ever return null? Seems risky.",
+  "author": "user",
   "created": "2024-01-15T10:30:00+00:00",
-  "resolved": false
+  "resolved": false,
+  "replies": [
+    {
+      "id": "uuid",
+      "author": "copilot",
+      "body": "Good catch — this should throw instead.",
+      "created": "2024-01-15T10:35:00+00:00"
+    }
+  ]
 }
 ```
+
+### Replying to Comments
+
+When responding to comments, **post replies via the API** rather than just printing them in the chat. This lets the user see the replies in the revue UI.
+
+The revue server runs on `http://127.0.0.1:7878` by default. To reply to a comment:
+
+```
+POST http://127.0.0.1:7878/api/comments/{comment-id}/replies
+Content-Type: application/json
+
+{ "author": "copilot", "body": "Your reply text here" }
+```
+
+Use `curl` or equivalent to post replies. Always use `"author": "copilot"` so the UI shows the reply as coming from Copilot (🤖).
+
+After posting all replies, tell the user to check the revue UI for your responses.
 
 ---
 
@@ -102,3 +128,4 @@ The comments file is at `.revue/comments.json` (relative to git repo root). Each
 - Only address **unresolved** comments unless the user asks for resolved ones too
 - The `.revue/` directory is gitignored — comments are local only
 - Comments are tied to a specific `base`/`head` diff range; mention this context when relevant
+- When replying, always use `author: "copilot"` so the UI distinguishes user vs Copilot comments

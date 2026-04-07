@@ -378,6 +378,7 @@
     position: relative;
   }
   .revue-comment-body { line-height: 1.5; }
+  .revue-comment-author { font-size: 0.625rem; font-weight: 600; color: var(--text-dim); margin-bottom: 2px; }
   .revue-comment-meta { font-size: 0.625rem; color: var(--text-dim); margin-top: 4px; display: flex; gap: 8px; align-items: center; }
   .revue-comment-meta button {
     background: none;
@@ -390,6 +391,11 @@
   }
   .revue-comment-meta button:hover { color: var(--text); }
   .revue-comment-item.resolved { opacity: 0.45; }
+  .revue-replies { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+  .revue-reply { background: var(--bg3); border-radius: var(--radius); padding: 4px 8px; font-size: 0.6875rem; }
+  .revue-reply-input { margin-top: 4px; }
+  .revue-reply-input textarea { width: 100%; background: var(--bg3); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); padding: 4px 6px; font-family: var(--font); font-size: 0.6875rem; resize: vertical; min-height: 40px; }
+  .revue-reply-input textarea:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
 
   /* Comment input box */
   .revue-comment-input-wrap {
@@ -1048,15 +1054,61 @@ function renderCommentItem(container, c, file) {
   const div = document.createElement('div');
   div.className = 'revue-comment-item' + (c.resolved ? ' resolved' : '');
   div.dataset.id = c.id;
+
+  const authorLabel = c.author === 'copilot' ? '🤖 Copilot' : `👤 ${c.author || 'user'}`;
   div.innerHTML = `
+    <div class="revue-comment-author">${escHtml(authorLabel)}</div>
     <div class="revue-comment-body">${escHtml(c.body)}</div>
     <div class="revue-comment-meta">
       <span>Line ${c.line}</span>
       <span>${new Date(c.created).toLocaleString()}</span>
+      <button class="reply-btn">Reply</button>
       <button class="resolve-btn">${c.resolved ? 'Unresolve' : 'Resolve'}</button>
       <button class="delete-btn">Delete</button>
     </div>
+    <div class="revue-replies"></div>
   `;
+
+  // Render existing replies
+  const repliesDiv = div.querySelector('.revue-replies');
+  if (c.replies?.length) {
+    c.replies.forEach(r => {
+      const rAuthor = r.author === 'copilot' ? '🤖 Copilot' : `👤 ${r.author || 'user'}`;
+      const replyEl = document.createElement('div');
+      replyEl.className = 'revue-reply';
+      replyEl.innerHTML = `
+        <div class="revue-comment-author">${escHtml(rAuthor)}</div>
+        <div class="revue-comment-body">${escHtml(r.body)}</div>
+        <div class="revue-comment-meta"><span>${new Date(r.created).toLocaleString()}</span></div>
+      `;
+      repliesDiv.appendChild(replyEl);
+    });
+  }
+
+  div.querySelector('.reply-btn').addEventListener('click', () => {
+    // Don't add if already has an open reply input
+    if (div.querySelector('.revue-reply-input')) return;
+    const inputDiv = document.createElement('div');
+    inputDiv.className = 'revue-reply-input';
+    inputDiv.innerHTML = `
+      <textarea placeholder="Write a reply…" rows="2"></textarea>
+      <div class="revue-comment-btn-row">
+        <button class="revue-btn secondary cancel-reply-btn">Cancel</button>
+        <button class="revue-btn save-reply-btn">Reply</button>
+      </div>
+    `;
+    repliesDiv.appendChild(inputDiv);
+    inputDiv.querySelector('textarea').focus();
+    inputDiv.querySelector('.cancel-reply-btn').addEventListener('click', () => inputDiv.remove());
+    inputDiv.querySelector('.save-reply-btn').addEventListener('click', async () => {
+      const body = inputDiv.querySelector('textarea').value.trim();
+      if (!body) return;
+      await apiPost(`/api/comments/${c.id}/replies`, { author: 'user', body });
+      state.comments = await api('/api/comments');
+      renderFileList();
+      await renderAllDiffs();
+    });
+  });
   div.querySelector('.resolve-btn').addEventListener('click', async () => {
     await apiPost('/api/comments', {...c, resolved: !c.resolved});
     state.comments = await api('/api/comments');
@@ -1217,7 +1269,7 @@ function showCommentInput(tr, file, line, lineContent, side) {
   wrap.querySelector('.save-btn').addEventListener('click', async () => {
     const body = wrap.querySelector('textarea').value.trim();
     if (!body) return;
-    await apiPost('/api/comments', { file, line, line_content: lineContent, base: state.base, head: state.head, side, body });
+    await apiPost('/api/comments', { file, line, line_content: lineContent, base: state.base, head: state.head, side, body, author: 'user' });
     state.comments = await api('/api/comments');
     cleanup();
     renderFileList();
