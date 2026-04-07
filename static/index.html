@@ -604,11 +604,10 @@ async function init() {
   document.getElementById('delete-resolved').addEventListener('click', async () => {
     const resolved = state.comments.filter(c => c.resolved);
     if (!resolved.length) return;
-    if (!confirm(`Delete ${resolved.length} resolved comment${resolved.length > 1 ? 's' : ''}?`)) return;
     await Promise.all(resolved.map(c => apiDelete(`/api/comments/${c.id}`)));
     state.comments = await api('/api/comments');
     renderFileList();
-    renderAllDiffs();
+    await renderAllDiffs();
   });
 
   // Settings panel
@@ -942,13 +941,13 @@ function renderCommentItem(container, c, file) {
     await apiPost('/api/comments', {...c, resolved: !c.resolved});
     state.comments = await api('/api/comments');
     renderFileList();
-    renderAllDiffs();
+    await renderAllDiffs();
   });
   div.querySelector('.delete-btn').addEventListener('click', async () => {
     await apiDelete(`/api/comments/${c.id}`);
     state.comments = await api('/api/comments');
     renderFileList();
-    renderAllDiffs();
+    await renderAllDiffs();
   });
   container.appendChild(div);
 }
@@ -1102,7 +1101,7 @@ function showCommentInput(tr, file, line, lineContent, side) {
     state.comments = await api('/api/comments');
     cleanup();
     renderFileList();
-    renderAllDiffs();
+    await renderAllDiffs();
   });
 }
 
