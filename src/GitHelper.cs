@@ -80,4 +80,27 @@ public static class GitHelper
     {
         return RunGit(["merge-base", a, b], repoRoot).Trim();
     }
+
+    public static List<string> GetUntrackedFiles(string repoRoot)
+    {
+        var output = RunGit(["ls-files", "--others", "--exclude-standard"], repoRoot);
+        return output.Split('\n', StringSplitOptions.RemoveEmptyEntries).ToList();
+    }
+
+    public static string GetUntrackedFileDiff(string file, string repoRoot)
+    {
+        var fullPath = Path.Combine(repoRoot, file.Replace('/', Path.DirectorySeparatorChar));
+        if (!File.Exists(fullPath)) return "";
+        var content = File.ReadAllText(fullPath);
+        var lines = content.Split('\n');
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"diff --git a/{file} b/{file}");
+        sb.AppendLine("new file mode 100644");
+        sb.AppendLine("--- /dev/null");
+        sb.AppendLine($"+++ b/{file}");
+        sb.AppendLine($"@@ -0,0 +1,{lines.Length} @@");
+        foreach (var line in lines)
+            sb.AppendLine($"+{line}");
+        return sb.ToString();
+    }
 }

@@ -129,6 +129,10 @@ app.MapGet("/api/diff", (string? @base, string? head, bool? ignoreWhitespace) =>
             if (wsFlag != null) args.Add(wsFlag);
             args.Add(mergeBase);
             raw = GitHelper.RunGit([.. args], repoRoot);
+
+            // Append untracked files
+            foreach (var f in GitHelper.GetUntrackedFiles(repoRoot))
+                raw += GitHelper.GetUntrackedFileDiff(f, repoRoot);
         }
         else
         {
@@ -161,6 +165,10 @@ app.MapGet("/api/file-diff", (string? @base, string? head, string? file, bool? i
             if (wsFlag != null) args.Add(wsFlag);
             args.AddRange([mergeBase, "--", file]);
             raw = GitHelper.RunGit([.. args], repoRoot);
+
+            // If no diff found, check if it's an untracked file
+            if (string.IsNullOrWhiteSpace(raw) && GitHelper.GetUntrackedFiles(repoRoot).Contains(file))
+                raw = GitHelper.GetUntrackedFileDiff(file, repoRoot);
         }
         else
         {
