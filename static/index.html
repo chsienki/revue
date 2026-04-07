@@ -437,6 +437,18 @@
   .show-resolved-wrap input { cursor: pointer; }
   .delete-resolved-btn { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 0.6875rem; text-decoration: underline; padding: 0; margin-left: auto; }
   .delete-resolved-btn:hover { color: var(--del-text, #f47174); }
+
+  .orphaned-section { border-top: 1px solid var(--border); margin-top: 4px; }
+  .orphaned-header { padding: 5px 10px; cursor: pointer; display: flex; align-items: center; gap: 4px; font-family: var(--mono); font-size: 0.75rem; color: var(--text-dim); font-weight: 600; background: var(--bg2); user-select: none; }
+  .orphaned-header .folder-arrow { font-size: 0.625rem; width: 12px; display: inline-block; transition: transform 0.15s; }
+  .orphaned-header.collapsed .folder-arrow { transform: rotate(-90deg); }
+  .orphaned-body.hidden { display: none; }
+  .orphaned-item { padding: 4px 10px 4px 26px; display: flex; align-items: flex-start; gap: 6px; font-size: 0.6875rem; border-bottom: 1px solid var(--border); }
+  .orphaned-item:last-child { border-bottom: none; }
+  .orphaned-file { font-family: var(--mono); color: var(--accent); white-space: nowrap; flex-shrink: 0; }
+  .orphaned-body-text { color: var(--text-dim); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .orphaned-delete-btn { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 0.75rem; padding: 0 2px; flex-shrink: 0; }
+  .orphaned-delete-btn:hover { color: var(--del-text, #f47174); }
 </style>
 </head>
 <body>
@@ -787,6 +799,61 @@ function renderFileList() {
     renderNode(tree.dirs[topDirs[0]], el);
   } else {
     renderNode(tree, el);
+  }
+
+  // Orphaned comments: comments on files not in the current diff
+  const diffFiles = new Set(state.files.map(f => f.file));
+  const orphaned = state.comments.filter(c => !diffFiles.has(c.file) && (state.showResolved || !c.resolved));
+  if (orphaned.length) {
+    const section = document.createElement('div');
+    section.className = 'orphaned-section';
+    const header = document.createElement('div');
+    header.className = 'orphaned-header';
+    header.innerHTML = `<span class="folder-arrow">▾</span> Orphaned comments <span class="comment-badge">${orphaned.length}</span>
+      <button class="delete-resolved-btn" id="delete-orphaned" style="margin-left:auto">Delete all</button>`;
+    const body = document.createElement('div');
+    body.className = 'orphaned-body';
+    header.addEventListener('click', (e) => {
+      if (e.target.id === 'delete-orphaned') return;
+      header.classList.toggle('collapsed');
+      body.classList.toggle('hidden');
+    });
+    header.querySelector('#delete-orphaned').addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await Promise.all(orphaned.map(c => apiDelete(`/api/comments/${c.id}`)));
+      state.comments = await api('/api/comments');
+      renderFileList();
+      await renderAllDiffs();
+    });
+
+    // Group by file
+    const byFile = {};
+    orphaned.forEach(c => {
+      if (!byFile[c.file]) byFile[c.file] = [];
+      byFile[c.file].push(c);
+    });
+    for (const [file, comments] of Object.entries(byFile).sort((a, b) => a[0].localeCompare(b[0]))) {
+      const fileName = file.split('/').pop();
+      comments.forEach(c => {
+        const item = document.createElement('div');
+        item.className = 'orphaned-item';
+        item.innerHTML = `
+          <div class="orphaned-file" title="${file}">${fileName}:${c.line}</div>
+          <div class="orphaned-body-text">${escHtml(c.body.substring(0, 80))}${c.body.length > 80 ? '…' : ''}</div>
+          <button class="orphaned-delete-btn" title="Delete">✕</button>
+        `;
+        item.querySelector('.orphaned-delete-btn').addEventListener('click', async () => {
+          await apiDelete(`/api/comments/${c.id}`);
+          state.comments = await api('/api/comments');
+          renderFileList();
+          await renderAllDiffs();
+        });
+        body.appendChild(item);
+      });
+    }
+    section.appendChild(header);
+    section.appendChild(body);
+    el.appendChild(section);
   }
 }
 
