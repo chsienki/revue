@@ -20,6 +20,7 @@
 
   /* Dark theme */
   [data-theme="dark"] {
+    color-scheme: dark;
     --bg: #1e1e1e;
     --bg2: #252526;
     --bg3: #2d2d30;
@@ -41,6 +42,7 @@
 
   /* Light theme — GitHub-inspired clean white */
   [data-theme="light"] {
+    color-scheme: light;
     --bg: #ffffff;
     --bg2: #f0f2f5;
     --bg3: #e2e6eb;
@@ -349,7 +351,7 @@
   .d2h-info .d2h-code-side-line, .d2h-info .d2h-code-line { background: var(--bg3) !important; width: auto !important; padding: 0 0.5em !important; position: sticky !important; left: 0 !important; }
   .d2h-info .d2h-code-linenumber, .d2h-info .d2h-code-side-linenumber { background: var(--bg3) !important; padding: 4px 6px !important; }
   td.d2h-code-linenumber.d2h-info { display: table-cell !important; }
-  .d2h-tag { background: var(--bg3) !important; color: var(--text-dim) !important; }
+  .d2h-tag { background: var(--bg3) !important; color: var(--text-dim) !important; border-radius: var(--radius) !important; padding: 1px 6px !important; margin-left: 8px !important; font-size: 0.625rem !important; }
 
   /* Expand context button on hunk headers */
   .revue-expand-btn { background: none; border: none; color: inherit; cursor: pointer; font-size: 0.75rem; padding: 0; line-height: 1; }
