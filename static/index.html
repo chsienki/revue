@@ -353,6 +353,8 @@
 
   /* Expand context button on hunk headers */
   .revue-expand-btn { background: none; border: none; color: inherit; cursor: pointer; font-size: 0.75rem; padding: 0; line-height: 1; }
+  .revue-expand-bar { background: var(--bg3); color: var(--text-dim); text-align: center; padding: 4px 0; cursor: pointer; font-size: 0.75rem; border-top: 1px solid var(--border); }
+  .revue-expand-bar:hover { background: var(--accent); color: #fff; }
 
   /* Comment threads injected into diff */
   .revue-comment-row { background: var(--comment-bg) !important; border-left: 3px solid var(--comment-border); }
@@ -1223,25 +1225,35 @@ function attachExpandButtons(file, container) {
     setupExpandCell(numCell, '↕');
   });
 
-  // Add ↓ button at the bottom of the file, matching the @@ info row structure
-  const tbody = isSxS
-    ? container.querySelector('.d2h-file-side-diff:first-child tbody')
-    : container.querySelector('tbody');
-  if (tbody) {
-    const rows = Array.from(tbody.querySelectorAll(':scope > tr'));
-    if (rows.length) {
-      const lastRow = rows[rows.length - 1];
-      if (!lastRow.querySelector('.d2h-info')) {
-        const expandRow = document.createElement('tr');
-        const numClass = isSxS ? 'd2h-code-side-linenumber' : 'd2h-code-linenumber';
-        const numTd = document.createElement('td');
-        numTd.className = `${numClass} d2h-info`;
-        setupExpandCell(numTd, '↓');
-        expandRow.appendChild(numTd);
-        const codeTd = document.createElement('td');
-        codeTd.className = 'd2h-info';
-        expandRow.appendChild(codeTd);
-        tbody.appendChild(expandRow);
+  // Add ↓ button at the bottom of the file
+  if (isSxS) {
+    // Add a full-width bar after the two panels
+    const filesDiff = container.querySelector('.d2h-files-diff');
+    if (filesDiff) {
+      const bar = document.createElement('div');
+      bar.className = 'revue-expand-bar';
+      bar.title = 'Show more context';
+      bar.textContent = '↓';
+      bar.addEventListener('click', expandHandler);
+      filesDiff.after(bar);
+    }
+  } else {
+    const tb = container.querySelector('tbody');
+    if (tb) {
+      const rows = Array.from(tb.querySelectorAll(':scope > tr'));
+      if (rows.length) {
+        const lastRow = rows[rows.length - 1];
+        if (!lastRow.querySelector('.d2h-info')) {
+          const expandRow = document.createElement('tr');
+          const numTd = document.createElement('td');
+          numTd.className = 'd2h-code-linenumber d2h-info';
+          setupExpandCell(numTd, '↓');
+          expandRow.appendChild(numTd);
+          const codeTd = document.createElement('td');
+          codeTd.className = 'd2h-info';
+          expandRow.appendChild(codeTd);
+          tb.appendChild(expandRow);
+        }
       }
     }
   }
