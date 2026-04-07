@@ -1183,6 +1183,8 @@ function attachLineClickHandlers(file, patch, container) {
 }
 
 function attachExpandButtons(file, container) {
+  const isSxS = !!container.querySelector('.d2h-file-side-diff');
+
   const expandHandler = async (e) => {
     e.stopPropagation();
     const currentContext = state.fileContext[file] || 5;
@@ -1206,28 +1208,34 @@ function attachExpandButtons(file, container) {
     return btn;
   };
 
-  // Add buttons on @@ hunk headers (expand above)
-  const infoRows = container.querySelectorAll('.d2h-info');
-  infoRows.forEach(infoRow => {
+  // In SxS, only add to the first (left) panel's info rows to avoid duplicates
+  const infoSelector = isSxS
+    ? '.d2h-file-side-diff:first-child .d2h-info'
+    : '.d2h-info';
+  container.querySelectorAll(infoSelector).forEach(infoRow => {
     const codeCell = infoRow.querySelector('.d2h-code-side-line, .d2h-code-line');
     if (!codeCell) return;
     codeCell.appendChild(makeBtn('⊕ Show more context'));
   });
 
-  // Add expand row at the bottom of each hunk (before the next @@ or end of file)
-  // Find all tbody elements (SxS has two, inline has one)
-  const tbodies = container.querySelectorAll('tbody');
-  tbodies.forEach(tbody => {
+  // Add expand row at the bottom of the file
+  // In SxS, only add to the first (left) tbody
+  const tbody = isSxS
+    ? container.querySelector('.d2h-file-side-diff:first-child tbody')
+    : container.querySelector('tbody');
+  if (tbody) {
     const rows = Array.from(tbody.querySelectorAll(':scope > tr'));
-    if (!rows.length) return;
-    const lastRow = rows[rows.length - 1];
-    // Don't add if the last row is already an info row
-    if (lastRow.querySelector('.d2h-info')) return;
-    const expandRow = document.createElement('tr');
-    expandRow.className = 'd2h-info';
-    const colCount = lastRow.cells.length || 2;
-    expandRow.innerHTML = `<td colspan="${colCount}" class="d2h-info" style="background:var(--bg3);text-align:center;padding:2px 0"></td>`;
-    expandRow.querySelector('td').appendChild(makeBtn('⊕ Show more context'));
+    if (rows.length) {
+      const lastRow = rows[rows.length - 1];
+      if (!lastRow.querySelector('.d2h-info')) {
+        const expandRow = document.createElement('tr');
+        const colCount = lastRow.cells.length || 2;
+        expandRow.innerHTML = `<td colspan="${colCount}" style="background:var(--bg3);text-align:center;padding:2px 0"></td>`;
+        expandRow.querySelector('td').appendChild(makeBtn('⊕ Show more context'));
+        tbody.appendChild(expandRow);
+      }
+    }
+  }
     tbody.appendChild(expandRow);
   });
 }
