@@ -1183,32 +1183,52 @@ function attachLineClickHandlers(file, patch, container) {
 }
 
 function attachExpandButtons(file, container) {
-  // Find @@ hunk header rows and add expand buttons
-  container.querySelectorAll('.d2h-info').forEach(infoRow => {
-    const codeCell = infoRow.querySelector('.d2h-code-side-line, .d2h-code-line');
-    if (!codeCell) return;
+  const expandHandler = async (e) => {
+    e.stopPropagation();
+    const currentContext = state.fileContext[file] || 5;
+    const newContext = currentContext + 5;
+    state.fileContext[file] = newContext;
+    const updated = await api(`/api/file-diff?base=${encodeURIComponent(state.base)}&head=${encodeURIComponent(state.head)}&file=${encodeURIComponent(file)}&ignoreWhitespace=${state.ignoreWhitespace}&context=${newContext}`);
+    if (!updated) return;
+    const idx = state.files.findIndex(f => f.file === file);
+    if (idx >= 0) state.files[idx] = updated;
+    renderFileList();
+    await renderAllDiffs();
+    const target = document.getElementById(`file-${encodeFileId(file)}`);
+    if (target) target.scrollIntoView({ block: 'start' });
+  };
+
+  const makeBtn = (label) => {
     const btn = document.createElement('button');
     btn.className = 'revue-expand-btn';
-    btn.textContent = '⊕ Show more context';
-    btn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      const currentContext = state.fileContext[file] || 5;
-      const newContext = currentContext + 5;
-      state.fileContext[file] = newContext;
-      // Re-fetch and re-render this file
-      const updated = await api(`/api/file-diff?base=${encodeURIComponent(state.base)}&head=${encodeURIComponent(state.head)}&file=${encodeURIComponent(file)}&ignoreWhitespace=${state.ignoreWhitespace}&context=${newContext}`);
-      if (!updated) return;
-      // Update the file in state
-      const idx = state.files.findIndex(f => f.file === file);
-      if (idx >= 0) state.files[idx] = updated;
-      // Re-render diffs preserving scroll
-      renderFileList();
-      await renderAllDiffs();
-      // Scroll back to this file
-      const target = document.getElementById(`file-${encodeFileId(file)}`);
-      if (target) target.scrollIntoView({ block: 'start' });
-    });
-    codeCell.appendChild(btn);
+    btn.textContent = label;
+    btn.addEventListener('click', expandHandler);
+    return btn;
+  };
+
+  // Add buttons on @@ hunk headers (expand above)
+  const infoRows = container.querySelectorAll('.d2h-info');
+  infoRows.forEach(infoRow => {
+    const codeCell = infoRow.querySelector('.d2h-code-side-line, .d2h-code-line');
+    if (!codeCell) return;
+    codeCell.appendChild(makeBtn('⊕ Show more context'));
+  });
+
+  // Add expand row at the bottom of each hunk (before the next @@ or end of file)
+  // Find all tbody elements (SxS has two, inline has one)
+  const tbodies = container.querySelectorAll('tbody');
+  tbodies.forEach(tbody => {
+    const rows = Array.from(tbody.querySelectorAll(':scope > tr'));
+    if (!rows.length) return;
+    const lastRow = rows[rows.length - 1];
+    // Don't add if the last row is already an info row
+    if (lastRow.querySelector('.d2h-info')) return;
+    const expandRow = document.createElement('tr');
+    expandRow.className = 'd2h-info';
+    const colCount = lastRow.cells.length || 2;
+    expandRow.innerHTML = `<td colspan="${colCount}" class="d2h-info" style="background:var(--bg3);text-align:center;padding:2px 0"></td>`;
+    expandRow.querySelector('td').appendChild(makeBtn('⊕ Show more context'));
+    tbody.appendChild(expandRow);
   });
 }
 
