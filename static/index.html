@@ -1222,7 +1222,7 @@ function attachExpandButtons(file, container) {
     setupExpandCell(numCell, '↕');
   });
 
-  // Add ↓ button at the bottom of the file in line number position
+  // Add ↓ button at the bottom of the file, matching the @@ info row structure
   const tbody = isSxS
     ? container.querySelector('.d2h-file-side-diff:first-child tbody')
     : container.querySelector('tbody');
@@ -1232,18 +1232,14 @@ function attachExpandButtons(file, container) {
       const lastRow = rows[rows.length - 1];
       if (!lastRow.querySelector('.d2h-info')) {
         const expandRow = document.createElement('tr');
+        const numClass = isSxS ? 'd2h-code-side-linenumber' : 'd2h-code-linenumber';
         const numTd = document.createElement('td');
-        numTd.style.cssText = 'background:var(--bg3);text-align:center;padding:0;cursor:pointer';
+        numTd.className = `${numClass} d2h-info`;
         setupExpandCell(numTd, '↓');
         expandRow.appendChild(numTd);
-        // Fill remaining cells
-        const remaining = (lastRow.cells.length || 2) - 1;
-        if (remaining > 0) {
-          const fillerTd = document.createElement('td');
-          fillerTd.colSpan = remaining;
-          fillerTd.style.cssText = 'background:var(--bg3);padding:0';
-          expandRow.appendChild(fillerTd);
-        }
+        const codeTd = document.createElement('td');
+        codeTd.className = 'd2h-info';
+        expandRow.appendChild(codeTd);
         tbody.appendChild(expandRow);
       }
     }
