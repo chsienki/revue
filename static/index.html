@@ -437,18 +437,11 @@
   .show-resolved-wrap input { cursor: pointer; }
   .delete-resolved-btn { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 0.6875rem; text-decoration: underline; padding: 0; margin-left: auto; }
   .delete-resolved-btn:hover { color: var(--del-text, #f47174); }
-
-  .orphaned-section { border-top: 1px solid var(--border); margin-top: 4px; }
-  .orphaned-header { padding: 5px 10px; cursor: pointer; display: flex; align-items: center; gap: 4px; font-family: var(--mono); font-size: 0.75rem; color: var(--text-dim); font-weight: 600; background: var(--bg2); user-select: none; }
-  .orphaned-header .folder-arrow { font-size: 0.625rem; width: 12px; display: inline-block; transition: transform 0.15s; }
-  .orphaned-header.collapsed .folder-arrow { transform: rotate(-90deg); }
-  .orphaned-body.hidden { display: none; }
-  .orphaned-item { padding: 4px 10px 4px 26px; display: flex; align-items: flex-start; gap: 6px; font-size: 0.6875rem; border-bottom: 1px solid var(--border); }
-  .orphaned-item:last-child { border-bottom: none; }
-  .orphaned-file { font-family: var(--mono); color: var(--accent); white-space: nowrap; flex-shrink: 0; }
-  .orphaned-body-text { color: var(--text-dim); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .orphaned-delete-btn { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 0.75rem; padding: 0 2px; flex-shrink: 0; }
-  .orphaned-delete-btn:hover { color: var(--del-text, #f47174); }
+  .orphaned-file-item { border-top: 1px solid var(--border); margin-top: 4px; font-style: italic; }
+  .orphaned-wrapper { border: 1px solid var(--border); border-radius: var(--radius); margin-top: 8px; }
+  .orphaned-comments-list { padding: 8px 0; }
+  .orphaned-file-group { margin-bottom: 8px; }
+  .orphaned-file-header { font-family: var(--mono); font-size: 0.75rem; color: var(--accent); padding: 4px 12px; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -801,59 +794,24 @@ function renderFileList() {
     renderNode(tree, el);
   }
 
-  // Orphaned comments: comments on files not in the current diff
+  // Show orphaned comment count in file tree as a virtual entry
   const diffFiles = new Set(state.files.map(f => f.file));
   const orphaned = state.comments.filter(c => !diffFiles.has(c.file) && (state.showResolved || !c.resolved));
   if (orphaned.length) {
-    const section = document.createElement('div');
-    section.className = 'orphaned-section';
-    const header = document.createElement('div');
-    header.className = 'orphaned-header';
-    header.innerHTML = `<span class="folder-arrow">▾</span> Orphaned comments <span class="comment-badge">${orphaned.length}</span>
-      <button class="delete-resolved-btn" id="delete-orphaned" style="margin-left:auto">Delete all</button>`;
-    const body = document.createElement('div');
-    body.className = 'orphaned-body';
-    header.addEventListener('click', (e) => {
-      if (e.target.id === 'delete-orphaned') return;
-      header.classList.toggle('collapsed');
-      body.classList.toggle('hidden');
-    });
-    header.querySelector('#delete-orphaned').addEventListener('click', async (e) => {
-      e.stopPropagation();
-      await Promise.all(orphaned.map(c => apiDelete(`/api/comments/${c.id}`)));
-      state.comments = await api('/api/comments');
+    const div = document.createElement('div');
+    div.className = 'file-item orphaned-file-item' + (state.currentFile === '__orphaned__' ? ' active' : '');
+    div.style.paddingLeft = '26px';
+    div.innerHTML = `
+      <span class="file-name">Other comments</span>
+      <span class="comment-badge">${orphaned.length}</span>
+    `;
+    div.addEventListener('click', () => {
+      state.currentFile = '__orphaned__';
       renderFileList();
-      await renderAllDiffs();
+      const target = document.getElementById('file-__orphaned__');
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
-
-    // Group by file
-    const byFile = {};
-    orphaned.forEach(c => {
-      if (!byFile[c.file]) byFile[c.file] = [];
-      byFile[c.file].push(c);
-    });
-    for (const [file, comments] of Object.entries(byFile).sort((a, b) => a[0].localeCompare(b[0]))) {
-      const fileName = file.split('/').pop();
-      comments.forEach(c => {
-        const item = document.createElement('div');
-        item.className = 'orphaned-item';
-        item.innerHTML = `
-          <div class="orphaned-file" title="${file}">${fileName}:${c.line}</div>
-          <div class="orphaned-body-text">${escHtml(c.body.substring(0, 80))}${c.body.length > 80 ? '…' : ''}</div>
-          <button class="orphaned-delete-btn" title="Delete">✕</button>
-        `;
-        item.querySelector('.orphaned-delete-btn').addEventListener('click', async () => {
-          await apiDelete(`/api/comments/${c.id}`);
-          state.comments = await api('/api/comments');
-          renderFileList();
-          await renderAllDiffs();
-        });
-        body.appendChild(item);
-      });
-    }
-    section.appendChild(header);
-    section.appendChild(body);
-    el.appendChild(section);
+    el.appendChild(div);
   }
 }
 
@@ -889,6 +847,74 @@ async function renderAllDiffs() {
     injectComments(f.file, f.patch, fileWrappers[i]);
     attachLineClickHandlers(f.file, f.patch, fileWrappers[i]);
   });
+
+  // Render orphaned comments as a virtual file at the end
+  const diffFileSet = new Set(state.files.map(f => f.file));
+  const orphaned = state.comments.filter(c => !diffFileSet.has(c.file) && (state.showResolved || !c.resolved));
+  if (orphaned.length) {
+    const section = document.createElement('div');
+    section.className = 'd2h-file-wrapper orphaned-wrapper';
+    section.id = 'file-__orphaned__';
+
+    // Group by file
+    const byFile = {};
+    orphaned.forEach(c => {
+      if (!byFile[c.file]) byFile[c.file] = [];
+      byFile[c.file].push(c);
+    });
+
+    let html = `<div class="d2h-file-header" style="position:sticky;top:0;z-index:20">
+      <span style="font-weight:600">Other comments</span>
+      <span style="margin-left:8px;color:var(--text-dim);font-size:0.75rem">${orphaned.length} comment${orphaned.length > 1 ? 's' : ''} on files not in this diff</span>
+      <button class="delete-resolved-btn" id="delete-all-orphaned" style="margin-left:auto;font-size:0.75rem">Delete all</button>
+    </div><div class="orphaned-comments-list">`;
+
+    for (const [file, comments] of Object.entries(byFile).sort((a, b) => a[0].localeCompare(b[0]))) {
+      html += `<div class="orphaned-file-group">
+        <div class="orphaned-file-header">${escHtml(file)}</div>`;
+      comments.forEach(c => {
+        html += `<div class="revue-comment-item${c.resolved ? ' resolved' : ''}" data-orphan-id="${c.id}" style="margin:4px 12px">
+          <div class="revue-comment-body">${escHtml(c.body)}</div>
+          <div class="revue-comment-meta">
+            <span>Line ${c.line}</span>
+            <span>${new Date(c.created).toLocaleString()}</span>
+            <button class="resolve-btn">${c.resolved ? 'Unresolve' : 'Resolve'}</button>
+            <button class="delete-btn">Delete</button>
+          </div>
+        </div>`;
+      });
+      html += '</div>';
+    }
+    html += '</div>';
+    section.innerHTML = html;
+
+    // Wire up buttons
+    section.querySelector('#delete-all-orphaned').addEventListener('click', async () => {
+      await Promise.all(orphaned.map(c => apiDelete(`/api/comments/${c.id}`)));
+      state.comments = await api('/api/comments');
+      renderFileList();
+      await renderAllDiffs();
+    });
+    section.querySelectorAll('[data-orphan-id]').forEach(el => {
+      const id = el.dataset.orphanId;
+      const c = orphaned.find(x => x.id === id);
+      if (!c) return;
+      el.querySelector('.resolve-btn').addEventListener('click', async () => {
+        await apiPost('/api/comments', {...c, resolved: !c.resolved});
+        state.comments = await api('/api/comments');
+        renderFileList();
+        await renderAllDiffs();
+      });
+      el.querySelector('.delete-btn').addEventListener('click', async () => {
+        await apiDelete(`/api/comments/${id}`);
+        state.comments = await api('/api/comments');
+        renderFileList();
+        await renderAllDiffs();
+      });
+    });
+
+    target.appendChild(section);
+  }
 }
 
 // ── Comment injection ──────────────────────────────────────────────────────
