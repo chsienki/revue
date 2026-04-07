@@ -1219,8 +1219,9 @@ function attachExpandButtons(file, container) {
   const numCellSelector = isSxS
     ? '.d2h-file-side-diff:first-child td.d2h-code-side-linenumber.d2h-info'
     : 'td.d2h-code-linenumber.d2h-info';
-  container.querySelectorAll(numCellSelector).forEach(numCell => {
-    setupExpandCell(numCell, '↕');
+  const infoCells = container.querySelectorAll(numCellSelector);
+  infoCells.forEach((numCell, i) => {
+    setupExpandCell(numCell, i === 0 ? '↑' : '↕');
   });
 
   // Add ↓ button at the bottom of the file, matching the @@ info row structure
