@@ -301,16 +301,17 @@ static string FindRepoRoot(string start)
 static void EnsureGitignore(string repoRoot)
 {
     const string entry = ".revue/";
-    var gi = Path.Combine(repoRoot, ".gitignore");
-    if (File.Exists(gi))
+    var exclude = Path.Combine(repoRoot, ".git", "info", "exclude");
+    if (File.Exists(exclude))
     {
-        var lines = File.ReadAllLines(gi);
+        var lines = File.ReadAllLines(exclude);
         if (lines.Any(l => l.Trim() == entry)) return;
-        File.AppendAllText(gi, $"\n{entry}\n");
+        File.AppendAllText(exclude, $"\n{entry}\n");
     }
     else
     {
-        File.WriteAllText(gi, $"{entry}\n");
+        Directory.CreateDirectory(Path.GetDirectoryName(exclude)!);
+        File.WriteAllText(exclude, $"{entry}\n");
     }
 }
 
