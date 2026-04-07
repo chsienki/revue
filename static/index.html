@@ -1215,14 +1215,27 @@ function attachExpandButtons(file, container) {
     cell.addEventListener('click', expandHandler);
   };
 
-  // Add ↕ buttons on @@ hunk header line number cells
-  const numCellSelector = isSxS
-    ? '.d2h-file-side-diff:first-child td.d2h-code-side-linenumber.d2h-info'
-    : 'td.d2h-code-linenumber.d2h-info';
-  const infoCells = container.querySelectorAll(numCellSelector);
-  infoCells.forEach((numCell, i) => {
-    setupExpandCell(numCell, i === 0 ? '↑' : '↕');
-  });
+  // Add expand arrows on @@ hunk header line number cells
+  if (isSxS) {
+    const panels = container.querySelectorAll('.d2h-file-side-diff');
+    const leftInfoCells = panels[0].querySelectorAll('td.d2h-code-side-linenumber.d2h-info');
+    const rightInfoCells = panels[1].querySelectorAll('td.d2h-code-side-linenumber.d2h-info');
+    const leftCodeCells = panels[0].querySelectorAll('td.d2h-info:not(.d2h-code-side-linenumber)');
+    const rightCodeCells = panels[1].querySelectorAll('td.d2h-info:not(.d2h-code-side-linenumber)');
+    leftInfoCells.forEach((numCell, i) => {
+      setupExpandCell(numCell, i === 0 ? '↑' : '↕');
+      // Mirror arrow and hunk text to right panel
+      if (rightInfoCells[i]) setupExpandCell(rightInfoCells[i], i === 0 ? '↑' : '↕');
+      if (leftCodeCells[i] && rightCodeCells[i]) {
+        rightCodeCells[i].innerHTML = leftCodeCells[i].innerHTML;
+      }
+    });
+  } else {
+    const infoCells = container.querySelectorAll('td.d2h-code-linenumber.d2h-info');
+    infoCells.forEach((numCell, i) => {
+      setupExpandCell(numCell, i === 0 ? '↑' : '↕');
+    });
+  }
 
   // Add ↓ button at the bottom of the file, matching the @@ info row structure
   if (isSxS) {
