@@ -818,6 +818,8 @@ function renderFileList() {
 // ── Diff rendering ─────────────────────────────────────────────────────────
 
 async function renderAllDiffs() {
+  const scrollEl = document.getElementById('diffview');
+  const scrollTop = scrollEl?.scrollTop ?? 0;
   const dv = document.getElementById('diffview-content');
   if (!state.files.length) {
     dv.innerHTML = '<div id="diffview-placeholder">No changes</div>';
@@ -937,6 +939,7 @@ async function renderAllDiffs() {
 
     target.appendChild(section);
   }
+  if (scrollEl) scrollEl.scrollTop = scrollTop;
 }
 
 // ── Comment injection ──────────────────────────────────────────────────────
