@@ -350,6 +350,10 @@
   .d2h-info .d2h-code-linenumber, .d2h-info .d2h-code-side-linenumber { background: var(--bg3) !important; }
   .d2h-tag { background: var(--bg3) !important; color: var(--text-dim) !important; }
 
+  /* Expand context button on hunk headers */
+  .revue-expand-btn { background: none; border: 1px solid var(--border); color: var(--accent); cursor: pointer; font-size: 0.625rem; padding: 1px 6px; border-radius: var(--radius); margin-left: 8px; font-family: var(--font); }
+  .revue-expand-btn:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+
   /* Comment threads injected into diff */
   .revue-comment-row { background: var(--comment-bg) !important; border-left: 3px solid var(--comment-border); }
   .revue-spacer-row { background: var(--bg3) !important; border-left: none !important; }
@@ -528,6 +532,7 @@ let state = {
   showResolved: true,
   ignoreWhitespace: false,
   diffLayout: 'side-by-side',
+  fileContext: {},  // file -> context line count (default 5)
 };
 
 // ── Utilities ──────────────────────────────────────────────────────────────
@@ -688,6 +693,7 @@ function setupFilelistResize() {
 async function loadFiles() {
   const overlay = document.getElementById('loading-overlay');
   overlay.classList.add('active');
+  state.fileContext = {};
   // Yield to let the browser paint the overlay before heavy work
   await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
   state.comments = await api('/api/comments');
@@ -882,6 +888,7 @@ async function renderAllDiffs() {
     const injected = injectComments(f.file, f.patch, fileWrappers[i]);
     injected.forEach(id => injectedIds.add(id));
     attachLineClickHandlers(f.file, f.patch, fileWrappers[i]);
+    attachExpandButtons(f.file, fileWrappers[i]);
   });
   state._injectedIds = injectedIds;
 
@@ -1172,6 +1179,36 @@ function attachLineClickHandlers(file, patch, container) {
       handler(num1, 'left');
       handler(num2, 'right');
     }
+  });
+}
+
+function attachExpandButtons(file, container) {
+  // Find @@ hunk header rows and add expand buttons
+  container.querySelectorAll('.d2h-info').forEach(infoRow => {
+    const codeCell = infoRow.querySelector('.d2h-code-side-line, .d2h-code-line');
+    if (!codeCell) return;
+    const btn = document.createElement('button');
+    btn.className = 'revue-expand-btn';
+    btn.textContent = '⊕ Show more context';
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const currentContext = state.fileContext[file] || 5;
+      const newContext = currentContext + 20;
+      state.fileContext[file] = newContext;
+      // Re-fetch and re-render this file
+      const updated = await api(`/api/file-diff?base=${encodeURIComponent(state.base)}&head=${encodeURIComponent(state.head)}&file=${encodeURIComponent(file)}&ignoreWhitespace=${state.ignoreWhitespace}&context=${newContext}`);
+      if (!updated) return;
+      // Update the file in state
+      const idx = state.files.findIndex(f => f.file === file);
+      if (idx >= 0) state.files[idx] = updated;
+      // Re-render diffs preserving scroll
+      renderFileList();
+      await renderAllDiffs();
+      // Scroll back to this file
+      const target = document.getElementById(`file-${encodeFileId(file)}`);
+      if (target) target.scrollIntoView({ block: 'start' });
+    });
+    codeCell.appendChild(btn);
   });
 }
 

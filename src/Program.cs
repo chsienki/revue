@@ -147,21 +147,22 @@ app.MapGet("/api/diff", (string? @base, string? head, bool? ignoreWhitespace) =>
     catch (Exception ex) { return Results.Problem(ex.Message); }
 });
 
-// GET /api/file-diff?base=X&head=Y&file=F&ignoreWhitespace=true
-app.MapGet("/api/file-diff", (string? @base, string? head, string? file, bool? ignoreWhitespace) =>
+// GET /api/file-diff?base=X&head=Y&file=F&ignoreWhitespace=true&context=5
+app.MapGet("/api/file-diff", (string? @base, string? head, string? file, bool? ignoreWhitespace, int? context) =>
 {
     @base ??= defaultBase;
     head ??= "HEAD";
     if (string.IsNullOrWhiteSpace(file))
         return Results.BadRequest("file parameter required");
     var wsFlag = ignoreWhitespace == true ? "-w" : null;
+    var contextLines = context ?? 5;
     try
     {
         string raw;
         if (head == "HEAD")
         {
             var mergeBase = GitHelper.GetMergeBase(@base, "HEAD", repoRoot);
-            var args = new List<string> { "diff", "--unified=5" };
+            var args = new List<string> { "diff", $"--unified={contextLines}" };
             if (wsFlag != null) args.Add(wsFlag);
             args.AddRange([mergeBase, "--", file]);
             raw = GitHelper.RunGit([.. args], repoRoot);
@@ -172,7 +173,7 @@ app.MapGet("/api/file-diff", (string? @base, string? head, string? file, bool? i
         }
         else
         {
-            var args = new List<string> { "diff", "--unified=5" };
+            var args = new List<string> { "diff", $"--unified={contextLines}" };
             if (wsFlag != null) args.Add(wsFlag);
             args.AddRange([$"{@base}...{head}", "--", file]);
             raw = GitHelper.RunGit([.. args], repoRoot);
