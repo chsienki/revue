@@ -824,20 +824,42 @@ async function renderAllDiffs() {
     return;
   }
 
-  // Concatenate all file patches into one unified diff
-  const fullDiff = state.files.map(f => f.patch).filter(Boolean).join('\n');
   dv.innerHTML = '<div id="d2h-target"></div>';
   const target = document.getElementById('d2h-target');
+  const isSxS = state.diffLayout === 'side-by-side';
 
-  const ui = new Diff2HtmlUI(target, fullDiff, {
-    drawFileList: false,
-    matching: 'lines',
-    outputFormat: state.diffLayout,
-    renderNothingWhenEmpty: false,
-    highlight: true,
-    colorScheme: document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark',
-  });
-  await ui.draw();
+  if (isSxS) {
+    // Per-file rendering: use inline for pure adds/deletes, SxS for modifications
+    for (const f of state.files) {
+      if (!f.patch) continue;
+      const isAddOnly = f.deletions === 0;
+      const isDeleteOnly = f.additions === 0;
+      const format = (isAddOnly || isDeleteOnly) ? 'line-by-line' : 'side-by-side';
+      const fileTarget = document.createElement('div');
+      target.appendChild(fileTarget);
+      const ui = new Diff2HtmlUI(fileTarget, f.patch, {
+        drawFileList: false,
+        matching: 'lines',
+        outputFormat: format,
+        renderNothingWhenEmpty: false,
+        highlight: true,
+        colorScheme: document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark',
+      });
+      await ui.draw();
+    }
+  } else {
+    // Inline: render all files together
+    const fullDiff = state.files.map(f => f.patch).filter(Boolean).join('\n');
+    const ui = new Diff2HtmlUI(target, fullDiff, {
+      drawFileList: false,
+      matching: 'lines',
+      outputFormat: 'line-by-line',
+      renderNothingWhenEmpty: false,
+      highlight: true,
+      colorScheme: document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark',
+    });
+    await ui.draw();
+  }
 
   // Add anchor IDs to each file wrapper and attach per-file handlers
   const fileWrappers = target.querySelectorAll('.d2h-file-wrapper');
