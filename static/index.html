@@ -1193,7 +1193,7 @@ function attachExpandButtons(file, container) {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
       const currentContext = state.fileContext[file] || 5;
-      const newContext = currentContext + 20;
+      const newContext = currentContext + 5;
       state.fileContext[file] = newContext;
       // Re-fetch and re-render this file
       const updated = await api(`/api/file-diff?base=${encodeURIComponent(state.base)}&head=${encodeURIComponent(state.head)}&file=${encodeURIComponent(file)}&ignoreWhitespace=${state.ignoreWhitespace}&context=${newContext}`);
