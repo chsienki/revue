@@ -1,161 +1,110 @@
-# revue
+# 🎭 revue
 
-A lightweight local web-based git diff reviewer with GitHub Copilot CLI integration.
+A local web-based code review tool for git diffs. Browse changes in the browser, leave inline comments, then ask [GitHub Copilot CLI](https://docs.github.com/copilot/concepts/agents/about-copilot-cli) to address them.
 
-Open any git repo in a browser-based side-by-side diff viewer, leave inline comments on any line, then ask Copilot to address them.
+## Install
 
-## Requirements
+Requires [.NET 9+ SDK](https://dotnet.microsoft.com/download) and `git` on your PATH.
 
-- [.NET 9 SDK](https://dotnet.microsoft.com/download)
-- `git` on your PATH
-
-## Build
+### As a Copilot CLI plugin (recommended)
 
 ```bash
-cd src
-dotnet build
+cd /path/to/revue
+dotnet install.cs
 ```
 
-## Run
+This builds a self-contained binary and installs it as a Copilot CLI plugin with the `revue` skill. Restart Copilot CLI to pick it up.
+
+### Standalone
 
 ```bash
-# From inside a git repo:
-dotnet run --project /path/to/revue/src
+# Run directly from source
+cd /path/to/revue/src
+dotnet run -- /path/to/your/repo
 
-# Or point at a specific repo:
-dotnet run --project /path/to/revue/src -- /path/to/your/repo
+# Or publish a self-contained binary
+dotnet publish src -c Release -r win-x64 --self-contained -o dist
+./dist/revue /path/to/your/repo
 ```
 
-revue will:
-- Auto-detect the git repo root (walks up from the given path)
-- Start a local server (default port 7878, auto-increments if busy)
-- Open your browser automatically
-- Print the URL to stdout
-
-## Publish (self-contained binary)
-
-```bash
-# Linux
-dotnet publish src -c Release -r linux-x64 --self-contained -o dist/linux
-
-# macOS (Apple Silicon)
-dotnet publish src -c Release -r osx-arm64 --self-contained -o dist/mac
-
-# Windows
-dotnet publish src -c Release -r win-x64 --self-contained -o dist/win
-```
-
-Then run the resulting `revue` binary directly — no dotnet install needed.
-
-## Features
-
-### Diff viewer
-- Side-by-side or inline diff layout (toggle in Settings)
-- Syntax highlighting via highlight.js
-- Horizontally sticky line numbers
-- Loading overlay with spinner during diff updates
-
-### Theme support
-- Light and dark themes (VS Code-inspired colors)
-- Defaults to system preference via `prefers-color-scheme`
-- Override in Settings → Theme (auto / dark / light)
-- Persisted via cookie
-
-### File browser
-- Hierarchical collapsible file tree with folder grouping
-- Single-child folder chains collapsed (e.g., `src/components` instead of nested)
-- File change stats (`+/-` counts)
-- Resizable file list panel (drag the right edge)
-
-### Commit range selection
-- Click the "Commits ▾" button to see all commits in range
-- Click a commit to view just that commit's changes
-- Shift-click to select a range of commits (GitHub-style)
-- Range indicator badge shows selected SHA(s) with a clear button
-- Uses three-dot diff semantics (`base...head`)
-
-### Inline comments
-- Click any line number to open a comment box
-- Comments appear inline as highlighted threads
-- Resolve or delete comments
-- Toggle resolved comment visibility with the checkbox
-- Comments stored locally in `.revue/comments.json` (gitignored)
-
-### Settings
-- **Theme**: Auto (system) / Dark / Light
-- **Ignore whitespace**: Strips whitespace-only changes from diffs
-- **Diff layout**: Side-by-side or inline
-
-### Accessibility
-- All font sizes use `rem` units — scales with browser default font size
+revue auto-detects a free port starting at 7878 and opens your browser.
 
 ## Usage
 
-1. **Select range**: Use the `base` and `head` dropdowns to pick your diff range. Defaults to `upstream/main → HEAD` (falls back to `origin/main` → `main`).
+### Reviewing diffs
 
-2. **Browse files**: The left panel shows a hierarchical file tree of all changed files. Click a file to load its diff.
+1. **Select a range** — Use the `base` and `head` dropdowns to pick your diff range. Defaults to `upstream/main → HEAD`.
 
-3. **Commits**: Click "Commits ▾" to see all commits in range. Click a commit to view its changes; shift-click to select a range.
+2. **Browse files** — The left panel shows a collapsible file tree. Click a file to scroll to its diff.
 
-4. **Leave comments**: Click any line number in the diff to open a comment box. Type your comment and save.
+3. **Select commits** — Click "Commits ▾" to see all commits in range. Click a commit to view just that commit's changes. Shift-click to select a range.
 
-5. **Manage comments**: Comments appear inline as yellow-highlighted threads. Resolve or delete them. Toggle resolved comment visibility with the checkbox.
+4. **Expand context** — Click the `↑`/`↕`/`↓` arrows in the line number gutter to load more context around each hunk.
 
-## Comments format
+5. **Switch layouts** — In Settings, choose Side-by-side or Inline. Side-by-side mode automatically renders pure add/delete files inline (no empty panel).
 
-Comments are stored in `.revue/comments.json` at the repo root — automatically gitignored, never committed. This is the file Copilot reads.
+### Leaving comments
 
-```json
-[
-  {
-    "id": "uuid",
-    "file": "src/Compiler/Foo.cs",
-    "line": 42,
-    "lineContent": "    var result = DoThing();",
-    "base": "upstream/main",
-    "head": "HEAD",
-    "side": "right",
-    "body": "Why is this cast needed here?",
-    "created": "2026-04-02T...",
-    "resolved": false
-  }
-]
-```
+1. **Click any line number** in the diff to open a comment box.
 
-## Copilot CLI Integration
+2. **Save** to post your comment. It appears as a highlighted thread inline in the diff.
 
-Install the revue skill:
+3. **Reply** to any comment by clicking the Reply button — supports threaded conversations.
 
-```bash
-copilot plugin install ./skill
-```
+4. **Resolve** comments when addressed, or **Delete** them.
 
-Then after leaving comments in revue, open a Copilot CLI session in your repo and say:
+5. **Manage resolved** — Toggle "Show resolved" to hide/show resolved comments. Use "Delete resolved" to bulk-remove them.
+
+6. **Orphaned comments** — Comments on lines no longer visible in the diff (e.g., after staging changes) appear in an "Other comments" section at the end.
+
+### Copilot integration
+
+After leaving comments, open a Copilot CLI session in your repo and say:
 
 ```
 review my revue comments
 ```
 
-Copilot will read your unresolved comments and respond to each one — answering questions, addressing concerns, and suggesting fixes inline.
+Copilot reads your unresolved comments and responds to each one — answering questions, addressing concerns, and suggesting fixes. Copilot's replies appear as threaded responses (🤖) in the revue UI.
+
+You can also say `launch revue` from Copilot CLI to start the server without leaving the terminal.
+
+## Comments
+
+Comments are stored in `.revue/comments.json` at the repo root. This file is automatically added to `.git/info/exclude` (local-only, never committed).
+
+Each comment tracks:
+- **File, line, and side** (left/old or right/new)
+- **Author** (`user` or `copilot`)
+- **Threaded replies** with their own authors
+- **Resolved status**
+
+## Settings
+
+- **Theme** — Auto (system) / Dark / Light
+- **Ignore whitespace** — Strips whitespace-only changes
+- **Diff layout** — Side-by-side or Inline
+
+All preferences persist via cookies.
 
 ## Project structure
 
 ```
 revue/
 ├── src/
-│   ├── Revue.csproj        # net9.0 web SDK project
-│   ├── Program.cs          # ASP.NET Core minimal API + startup
-│   ├── GitHelper.cs        # git subprocess calls + diff parser
+│   ├── Program.cs          # ASP.NET Core minimal API + all endpoints
+│   ├── GitHelper.cs        # Git CLI wrapper + diff parser
 │   ├── CommentsStore.cs    # .revue/comments.json read/write
-│   └── Models.cs           # Comment, CommentRequest, DiffFile records
+│   └── Models.cs           # Comment, Reply, DiffFile records
 ├── static/
-│   └── index.html          # Single-page diff viewer (vanilla JS, diff2html CDN)
-├── skill/
-│   ├── plugin.json         # Copilot CLI plugin manifest
+│   ├── index.html          # Entire frontend (HTML + CSS + JS, no build step)
+│   ├── icon.svg            # App icon (🎭 emoji)
+│   └── manifest.json       # Web app manifest for standalone mode
+├── skill/                  # Copilot CLI plugin
+│   ├── plugin.json
 │   └── skills/revue/
-│       ├── SKILL.md        # Copilot skill definition
-│       └── scripts/
-│           └── read_comments.sh
+│       └── SKILL.md
+├── install.cs              # Build + install as Copilot plugin
 └── .github/
     └── copilot-instructions.md
 ```
@@ -167,8 +116,10 @@ revue/
 | GET | `/api/config` | Default base ref + repo root |
 | GET | `/api/branches` | All local + remote branches |
 | GET | `/api/log?base=X&head=Y` | Git log between two refs |
-| GET | `/api/diff?base=X&head=Y` | Unified diff, all files |
-| GET | `/api/file-diff?base=X&head=Y&file=F` | Diff for a single file |
+| GET | `/api/diff?base=X&head=Y&ignoreWhitespace=bool` | Diff for all files (includes untracked) |
+| GET | `/api/file-diff?base=X&head=Y&file=F&context=N` | Diff for a single file with configurable context |
 | GET | `/api/comments` | Load all comments |
 | POST | `/api/comments` | Add or update a comment |
-| DELETE | `/api/comments/{id}` | Delete a comment |
+| POST | `/api/comments/{id}/replies` | Add a reply to a comment |
+| POST | `/api/comments/delete-batch` | Bulk delete by ID array |
+| DELETE | `/api/comments/{id}` | Delete a single comment |
