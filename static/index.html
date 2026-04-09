@@ -840,6 +840,20 @@ function renderFileList() {
 async function renderAllDiffs() {
   const scrollEl = document.getElementById('diffview');
   const scrollTop = scrollEl?.scrollTop ?? 0;
+
+  // Save any open comment input boxes before re-rendering
+  const openInputs = [];
+  document.querySelectorAll('.revue-input-row').forEach(row => {
+    const wrap = row.querySelector('.revue-comment-input-wrap');
+    if (!wrap) return;
+    const textarea = wrap.querySelector('textarea');
+    const text = textarea?.value || '';
+    // Extract file/line/side from the data attributes we'll store
+    if (row.dataset.file) {
+      openInputs.push({ file: row.dataset.file, line: parseInt(row.dataset.line), side: row.dataset.side, lineContent: row.dataset.lineContent || '', text });
+    }
+  });
+
   const dv = document.getElementById('diffview-content');
   if (!state.files.length) {
     dv.innerHTML = '<div id="diffview-placeholder">No changes</div>';
@@ -964,6 +978,35 @@ async function renderAllDiffs() {
 
     target.appendChild(section);
   }
+
+  // Restore any open comment input boxes
+  openInputs.forEach(inp => {
+    // Find the matching line number cell in the re-rendered DOM
+    const wrapper = document.getElementById(`file-${encodeFileId(inp.file)}`);
+    if (!wrapper) return;
+    const isSxS = !!wrapper.querySelector('.d2h-file-side-diff');
+    const selector = isSxS ? 'td.d2h-code-side-linenumber' : 'td.d2h-code-linenumber';
+    const cells = wrapper.querySelectorAll(selector);
+    for (const cell of cells) {
+      const side = isSxS ? detectSide(cell) : (cell.querySelector('.line-num2') ? 'right' : 'left');
+      if (side !== inp.side) continue;
+      let lineNum;
+      if (isSxS) {
+        lineNum = parseInt(cell.textContent.trim(), 10);
+      } else {
+        const numEl = inp.side === 'left' ? cell.querySelector('.line-num1') : cell.querySelector('.line-num2');
+        lineNum = numEl ? parseInt(numEl.textContent.trim(), 10) : NaN;
+      }
+      if (lineNum === inp.line) {
+        const tr = cell.closest('tr');
+        if (tr && !tr.nextSibling?.classList?.contains('revue-input-row')) {
+          showCommentInput(tr, inp.file, inp.line, inp.lineContent, inp.side, inp.text);
+        }
+        break;
+      }
+    }
+  });
+
   if (scrollEl) scrollEl.scrollTop = scrollTop;
 }
 
@@ -1356,9 +1399,13 @@ function insertWithSpacer(tr, newRow) {
   }
 }
 
-function showCommentInput(tr, file, line, lineContent, side) {
+function showCommentInput(tr, file, line, lineContent, side, prefillText) {
   const inputRow = document.createElement('tr');
   inputRow.className = 'revue-input-row revue-comment-row';
+  inputRow.dataset.file = file;
+  inputRow.dataset.line = line;
+  inputRow.dataset.side = side;
+  inputRow.dataset.lineContent = lineContent;
   const colCount = tr.cells.length || 4;
   inputRow.innerHTML = `<td colspan="${colCount}"></td>`;
   const isSxS = !!tr.closest('.d2h-file-side-diff');
@@ -1379,7 +1426,9 @@ function showCommentInput(tr, file, line, lineContent, side) {
     </div>
   `;
   td.appendChild(wrap);
-  wrap.querySelector('textarea').focus();
+  const ta = wrap.querySelector('textarea');
+  if (prefillText) ta.value = prefillText;
+  ta.focus();
 
   const cleanup = () => {
     if (inputRow._resizeObserver) inputRow._resizeObserver.disconnect();
