@@ -9,8 +9,8 @@ Requires [.NET 9+ SDK](https://dotnet.microsoft.com/download) and `git` on your 
 ### As a Copilot CLI plugin (recommended)
 
 ```bash
-cd /path/to/revue
-dotnet install.cs
+git clone https://github.com/chsienki/revue
+dotnet ./revue/install.cs
 ```
 
 This builds a self-contained binary and installs it as a Copilot CLI plugin with the `revue` skill. Restart Copilot CLI to pick it up.
