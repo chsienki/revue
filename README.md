@@ -2,6 +2,8 @@
 
 A local web-based code review tool for git diffs. Browse changes in the browser, leave inline comments, then ask [GitHub Copilot CLI](https://docs.github.com/copilot/concepts/agents/about-copilot-cli) to address them.
 
+![revue screenshot showing side-by-side diff with inline comments and Copilot replies](static/screenshot.png)
+
 ## Install
 
 Requires [.NET 9+ SDK](https://dotnet.microsoft.com/download) and `git` on your PATH.
