@@ -1517,8 +1517,8 @@ function applyCommitRange() {
 
   if (!state.rangeEnd) {
     if (isWorkingTree) {
-      // Working tree: diff from logBase to working tree (HEAD)
-      state.base = state.logBase;
+      // Working tree: diff from HEAD to working tree (uncommitted changes only)
+      state.base = 'HEAD';
       state.head = 'HEAD';
       btn.classList.add('range-active');
       label.className = 'active';
