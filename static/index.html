@@ -1489,24 +1489,20 @@ function renderCommitList() {
     row.className = 'commit-row';
     if (i === startIdx || i === endIdx) row.classList.add('selected');
     else if (startIdx >= 0 && endIdx >= 0 && i > startIdx && i < endIdx) row.classList.add('in-range');
-    row.innerHTML = `<span class="commit-hash">${escHtml(c.hash.slice(0, 8))}</span><span class="commit-subject" title="${escHtml(c.message)}">${escHtml(c.message)}</span>`;
-    if (c.hash.startsWith('~')) {
-      row.style.opacity = '0.6';
-      row.style.cursor = 'default';
-    } else {
-      row.addEventListener('click', (e) => {
-        e.preventDefault();
-        if (e.shiftKey) {
-          window.getSelection()?.removeAllRanges();
-          state.rangeEnd = c.hash;
-        } else {
-          state.rangeStart = c.hash;
-          state.rangeEnd = null;
-        }
-        applyCommitRange();
-        renderCommitList();
-      });
-    }
+    const isWorkingTree = c.hash === '~working~';
+    row.innerHTML = `<span class="commit-hash">${isWorkingTree ? '✱' : escHtml(c.hash.slice(0, 8))}</span><span class="commit-subject" title="${escHtml(c.message)}">${escHtml(c.message)}</span>`;
+    row.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (e.shiftKey && !isWorkingTree) {
+        window.getSelection()?.removeAllRanges();
+        state.rangeEnd = c.hash;
+      } else {
+        state.rangeStart = c.hash;
+        state.rangeEnd = null;
+      }
+      applyCommitRange();
+      renderCommitList();
+    });
     list.appendChild(row);
   });
 }
@@ -1517,13 +1513,24 @@ function applyCommitRange() {
   const label = document.getElementById('commit-range-label');
   if (!state.rangeStart) return;
 
+  const isWorkingTree = state.rangeStart === '~working~';
+
   if (!state.rangeEnd) {
-    // Single commit: diff from logBase...commit
-    state.base = state.logBase;
-    state.head = state.rangeStart;
-    btn.classList.add('range-active');
-    label.className = 'active';
-    label.innerHTML = `${state.rangeStart.slice(0, 8)} <span class="range-clear" title="Clear selection">✕</span>`;
+    if (isWorkingTree) {
+      // Working tree: diff from logBase to working tree (HEAD)
+      state.base = state.logBase;
+      state.head = 'HEAD';
+      btn.classList.add('range-active');
+      label.className = 'active';
+      label.innerHTML = `Working tree <span class="range-clear" title="Clear selection">✕</span>`;
+    } else {
+      // Single commit: diff just that commit (parent..commit)
+      state.base = state.rangeStart + '^';
+      state.head = state.rangeStart;
+      btn.classList.add('range-active');
+      label.className = 'active';
+      label.innerHTML = `${state.rangeStart.slice(0, 8)} <span class="range-clear" title="Clear selection">✕</span>`;
+    }
   } else {
     // Range: find the older and newer commits
     let si = commits.findIndex(c => c.hash === state.rangeStart);
@@ -1532,11 +1539,13 @@ function applyCommitRange() {
     if (si > ei) { const t = si; si = ei; ei = t; }
     const newerHash = commits[si].hash;
     const olderHash = commits[ei].hash;
+    // If the newer end is working tree, use HEAD
+    const newerRef = newerHash === '~working~' ? 'HEAD' : newerHash;
     state.base = olderHash + '^';
-    state.head = newerHash;
+    state.head = newerRef;
     btn.classList.add('range-active');
     label.className = 'active';
-    label.innerHTML = `${olderHash.slice(0, 8)} → ${newerHash.slice(0, 8)} <span class="range-clear" title="Clear selection">✕</span>`;
+    label.innerHTML = `${olderHash.slice(0, 8)} → ${newerHash === '~working~' ? 'Working tree' : newerHash.slice(0, 8)} <span class="range-clear" title="Clear selection">✕</span>`;
   }
   label.querySelector('.range-clear')?.addEventListener('click', (e) => {
     e.stopPropagation();
