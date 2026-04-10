@@ -317,7 +317,28 @@ static string FindRepoRoot(string start)
 static void EnsureGitignore(string repoRoot)
 {
     const string entry = ".revue/";
-    var exclude = Path.Combine(repoRoot, ".git", "info", "exclude");
+    // Resolve the actual .git directory (handles worktrees where .git is a file)
+    string gitDir;
+    var dotGit = Path.Combine(repoRoot, ".git");
+    if (File.Exists(dotGit))
+    {
+        // Worktree: .git is a file containing "gitdir: /path/to/git/dir"
+        var content = File.ReadAllText(dotGit).Trim();
+        if (content.StartsWith("gitdir:"))
+            gitDir = Path.GetFullPath(content["gitdir:".Length..].Trim(), repoRoot);
+        else
+            return;
+    }
+    else if (Directory.Exists(dotGit))
+    {
+        gitDir = dotGit;
+    }
+    else
+    {
+        return;
+    }
+
+    var exclude = Path.Combine(gitDir, "info", "exclude");
     if (File.Exists(exclude))
     {
         var lines = File.ReadAllLines(exclude);
