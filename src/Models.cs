@@ -41,3 +41,5 @@ public record ReplyRequest(
 );
 
 public record DiffFile(string File, string Patch, int Additions, int Deletions);
+
+public record RefStatus(string Remote, string Branch, int Behind);

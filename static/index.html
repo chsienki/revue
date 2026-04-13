@@ -38,6 +38,9 @@
     --comment-bg: #3a3200;
     --comment-border: #cca700;
     --comment-text: #cccccc;
+    --warning-bg: #3a3200;
+    --warning-border: #cca700;
+    --warning-text: #e0c060;
   }
 
   /* Light theme — GitHub-inspired clean white */
@@ -60,9 +63,46 @@
     --comment-bg: #fef3cd;
     --comment-border: #c69500;
     --comment-text: #1a1a1a;
+    --warning-bg: #fff8e1;
+    --warning-border: #c69500;
+    --warning-text: #6d5300;
   }
 
   body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 0.8125rem; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+  /* Stale ref warning banner */
+  #stale-banner {
+    display: none;
+    background: var(--warning-bg);
+    border-bottom: 1px solid var(--warning-border);
+    color: var(--warning-text);
+    padding: 6px 12px;
+    font-size: 0.8125rem;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+  #stale-banner.active { display: flex; }
+  #stale-banner .stale-icon { font-size: 1rem; }
+  #stale-banner .stale-msg { flex: 1; }
+  #stale-banner button {
+    background: var(--warning-border);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius);
+    padding: 3px 10px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 0.8125rem;
+  }
+  #stale-banner button:hover { opacity: 0.85; }
+  #stale-banner button:disabled { opacity: 0.5; cursor: default; }
+  #stale-banner .dismiss-btn {
+    background: transparent;
+    color: var(--warning-text);
+    font-size: 1rem;
+    padding: 0 4px;
+  }
 
   /* Top bar */
   #topbar {
@@ -504,6 +544,13 @@
   </div>
 </div>
 
+<div id="stale-banner">
+  <span class="stale-icon">⚠</span>
+  <span class="stale-msg" id="stale-msg"></span>
+  <button id="stale-fetch-btn">Fetch</button>
+  <button class="dismiss-btn" id="stale-dismiss" title="Dismiss">✕</button>
+</div>
+
 <div id="main">
   <div id="filelist">
     <div id="filelist-header">Files</div>
@@ -588,6 +635,43 @@ async function apiDelete(path) {
   const r = await fetch(API + path, { method: 'DELETE' });
   if (!r.ok) throw new Error(`API error ${r.status}: ${await r.text()}`);
 }
+
+// ── Stale ref detection ───────────────────────────────────────────────────
+
+async function checkBaseRefStatus() {
+  const banner = document.getElementById('stale-banner');
+  banner.classList.remove('active');
+  try {
+    const status = await api(`/api/ref-status?ref=${encodeURIComponent(state.logBase)}`);
+    if (!status.tracking || status.behind === 0) return;
+    const msg = document.getElementById('stale-msg');
+    msg.textContent = `"${state.logBase}" is behind ${status.remote}/${status.branch} — diff may include extra changes`;
+    banner.classList.add('active');
+    banner.dataset.remote = status.remote;
+    banner.dataset.branch = status.branch;
+  } catch { /* best-effort, don't block UI */ }
+}
+
+document.getElementById('stale-fetch-btn').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  const banner = document.getElementById('stale-banner');
+  btn.disabled = true;
+  btn.textContent = 'Fetching…';
+  try {
+    const remote = banner.dataset.remote;
+    const branch = banner.dataset.branch;
+    await apiPost(`/api/fetch?remote=${encodeURIComponent(remote)}&branch=${encodeURIComponent(branch)}`);
+    banner.classList.remove('active');
+    loadFiles();
+  } catch (err) {
+    btn.textContent = 'Fetch failed';
+    setTimeout(() => { btn.textContent = 'Fetch'; btn.disabled = false; }, 3000);
+  }
+});
+
+document.getElementById('stale-dismiss').addEventListener('click', () => {
+  document.getElementById('stale-banner').classList.remove('active');
+});
 
 // ── Init ───────────────────────────────────────────────────────────────────
 
@@ -698,6 +782,8 @@ async function loadFiles() {
   const overlay = document.getElementById('loading-overlay');
   overlay.classList.add('active');
   state.fileContext = {};
+  // Check if base ref is stale (non-blocking, runs in parallel)
+  checkBaseRefStatus();
   // Yield to let the browser paint the overlay before heavy work
   await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
   state.comments = await api('/api/comments');

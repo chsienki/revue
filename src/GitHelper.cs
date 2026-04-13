@@ -81,6 +81,50 @@ public static class GitHelper
         return RunGit(["merge-base", a, b], repoRoot).Trim();
     }
 
+    /// <summary>
+    /// For a tracking ref like "upstream/main", checks if the local ref is behind
+    /// the remote by comparing local rev to `git ls-remote`. Returns the remote
+    /// name and branch, plus how many commits behind, or null if up-to-date/not a remote ref.
+    /// </summary>
+    public static RefStatus? CheckRefStatus(string @ref, string repoRoot)
+    {
+        // Only check remote-tracking refs (e.g. "upstream/main", "origin/develop")
+        var slash = @ref.IndexOf('/');
+        if (slash <= 0) return null;
+
+        var remote = @ref[..slash];
+        var branch = @ref[(slash + 1)..];
+
+        // Verify it's actually a remote
+        try { RunGit(["remote", "get-url", remote], repoRoot); }
+        catch { return null; }
+
+        string localSha;
+        try { localSha = RunGit(["rev-parse", @ref], repoRoot).Trim(); }
+        catch { return null; }
+
+        string remoteSha;
+        try
+        {
+            var lsRemote = RunGit(["ls-remote", remote, $"refs/heads/{branch}"], repoRoot).Trim();
+            if (string.IsNullOrEmpty(lsRemote)) return null;
+            remoteSha = lsRemote.Split('\t')[0];
+        }
+        catch { return null; }
+
+        if (localSha == remoteSha)
+            return new RefStatus(remote, branch, 0);
+
+        // Count how many commits the remote is ahead (requires the remote sha to be fetchable)
+        // We can't count without fetching, so just report "behind" with -1
+        return new RefStatus(remote, branch, -1);
+    }
+
+    public static void FetchRef(string remote, string branch, string repoRoot)
+    {
+        RunGit(["fetch", remote, branch], repoRoot);
+    }
+
     public static List<string> GetUntrackedFiles(string repoRoot)
     {
         var output = RunGit(["ls-files", "--others", "--exclude-standard"], repoRoot);

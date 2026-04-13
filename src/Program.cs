@@ -286,6 +286,30 @@ app.MapPost("/api/comments/delete-batch", async (HttpRequest req) =>
     return Results.Ok();
 });
 
+// GET /api/ref-status?ref=X — check if a remote-tracking ref is behind its remote
+app.MapGet("/api/ref-status", (string @ref) =>
+{
+    try
+    {
+        var status = GitHelper.CheckRefStatus(@ref, repoRoot);
+        if (status == null)
+            return Results.Json(new { tracking = false }, jsonOpts);
+        return Results.Json(new { tracking = true, remote = status.Remote, branch = status.Branch, behind = status.Behind }, jsonOpts);
+    }
+    catch (Exception ex) { return Results.Problem(ex.Message); }
+});
+
+// POST /api/fetch?remote=X&branch=Y — fetch a specific branch from a remote
+app.MapPost("/api/fetch", (string remote, string branch) =>
+{
+    try
+    {
+        GitHelper.FetchRef(remote, branch, repoRoot);
+        return Results.Ok();
+    }
+    catch (Exception ex) { return Results.Problem(ex.Message); }
+});
+
 // ── Start ────────────────────────────────────────────────────────────────────
 Console.WriteLine($"revue  →  {url}");
 Console.WriteLine($"repo   →  {repoRoot}");
