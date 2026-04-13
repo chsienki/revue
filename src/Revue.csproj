@@ -9,4 +9,13 @@
   <ItemGroup>
     <EmbeddedResource Include="..\static\index.html" LogicalName="index.html" />
   </ItemGroup>
+  <Target Name="SetGitVersion" BeforeTargets="GetAssemblyVersion;GenerateAssemblyInfo">
+    <Exec Command="git rev-parse --short HEAD" ConsoleToMSBuild="true" StandardOutputImportance="low" IgnoreExitCode="true">
+      <Output TaskParameter="ConsoleOutput" PropertyName="GitCommitShort" />
+    </Exec>
+    <PropertyGroup>
+      <GitCommitShort Condition="'$(GitCommitShort)' == ''">unknown</GitCommitShort>
+      <InformationalVersion>$(GitCommitShort)</InformationalVersion>
+    </PropertyGroup>
+  </Target>
 </Project>

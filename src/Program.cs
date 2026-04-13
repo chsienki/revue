@@ -67,10 +67,15 @@ app.MapGet("/icon.svg", () =>
 });
 
 // GET /api/config
+var fullVersion = Assembly.GetExecutingAssembly()
+    .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "dev";
+// Strip source link metadata (e.g. "abc1234+full-sha" → "abc1234")
+var version = fullVersion.Split('+')[0];
 app.MapGet("/api/config", () => Results.Json(new
 {
     defaultBase,
     repoRoot,
+    version,
 }, jsonOpts));
 
 // GET /api/branches

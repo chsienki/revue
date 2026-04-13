@@ -118,6 +118,7 @@
   }
   #topbar .logo-icon { font-size: 1.125rem; }
   #topbar .logo { font-weight: 700; font-size: 1.125rem; color: var(--text); letter-spacing: 0.5px; white-space: nowrap; }
+  #version-label { font-size: 0.6875rem; color: var(--text-dim); font-family: var(--mono); white-space: nowrap; }
   #topbar label { color: var(--text-dim); }
   #topbar select {
     background: var(--bg3);
@@ -501,7 +502,7 @@
 <body>
 
 <div id="topbar">
-  <span class="logo-icon">🎭</span><span class="logo">revue</span>
+  <span class="logo-icon">🎭</span><span class="logo">revue</span><span id="version-label"></span>
   <div class="topbar-group">
     <label>base</label>
     <select id="base-sel"></select>
@@ -681,6 +682,8 @@ async function init() {
   state.head = 'HEAD';
   state.logBase = state.base;
   state.logHead = state.head;
+
+  if (cfg.version) document.getElementById('version-label').textContent = cfg.version;
 
   const baseSel = document.getElementById('base-sel');
   const headSel = document.getElementById('head-sel');
