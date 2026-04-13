@@ -3,8 +3,10 @@
 
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
 
-var repoRoot = Capture("git", "rev-parse --show-toplevel").Trim().Replace('/', Path.DirectorySeparatorChar);
+var scriptDir = GetScriptDir();
+var repoRoot = Capture("git", $"-C {Quote(scriptDir)} rev-parse --show-toplevel").Trim().Replace('/', Path.DirectorySeparatorChar);
 var srcDir = Path.Combine(repoRoot, "src");
 var skillSourceDir = Path.Combine(repoRoot, "skill");
 
@@ -77,6 +79,8 @@ finally
     if (Directory.Exists(publishDir))
         Directory.Delete(publishDir, recursive: true);
 }
+
+static string GetScriptDir([CallerFilePath] string path = "") => Path.GetDirectoryName(path)!;
 
 static string GetDefaultRid()
 {
