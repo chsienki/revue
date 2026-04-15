@@ -1154,18 +1154,50 @@ async function renderAllDiffs() {
   if (scrollEl) scrollEl.scrollTop = scrollTop;
 }
 
+// ── Comment relocation ────────────────────────────────────────────────────
+
+function relocateComment(comment, lineMap) {
+  const stored = comment.lineContent?.trim();
+  if (!stored) return { line: comment.line, drifted: false };
+
+  // Fast path: content still matches at stored line
+  if (lineMap[comment.line] !== undefined && lineMap[comment.line].trim() === stored)
+    return { line: comment.line, drifted: false };
+
+  // Search outward from original line
+  const maxDrift = 200;
+  for (let delta = 1; delta <= maxDrift; delta++) {
+    const above = comment.line - delta;
+    const below = comment.line + delta;
+    if (above > 0 && lineMap[above] !== undefined && lineMap[above].trim() === stored)
+      return { line: above, drifted: true };
+    if (lineMap[below] !== undefined && lineMap[below].trim() === stored)
+      return { line: below, drifted: true };
+  }
+
+  // Content not found — return original line, will show as orphaned if line doesn't exist in diff
+  return { line: comment.line, drifted: false };
+}
+
 // ── Comment injection ──────────────────────────────────────────────────────
 
 function injectComments(file, patch, container) {
   const injectedIds = [];
+  const lines = patch.split('\n');
+  const newLineMap = buildLineMap(lines, 'new');
+  const oldLineMap = buildLineMap(lines, 'old');
+
   const lineComments = {};
   state.comments
     .filter(c => c.file === file)
     .filter(c => state.showResolved || !c.resolved)
     .forEach(c => {
-      const key = `${c.side}:${c.line}`;
+      const lineMap = c.side === 'left' ? oldLineMap : newLineMap;
+      const relocated = relocateComment(c, lineMap);
+      const displayLine = relocated.line;
+      const key = `${c.side}:${displayLine}`;
       if (!lineComments[key]) lineComments[key] = [];
-      lineComments[key].push(c);
+      lineComments[key].push({ ...c, _displayLine: displayLine, _drifted: relocated.drifted });
     });
 
   if (!Object.keys(lineComments).length) return injectedIds;
@@ -1262,11 +1294,12 @@ function renderCommentItem(container, c, file) {
   div.dataset.id = c.id;
 
   const authorLabel = c.author === 'copilot' ? '🤖 Copilot' : `👤 ${c.author || 'user'}`;
+  const driftLabel = c._drifted ? ` <span style="color:var(--text-dim);font-style:italic" title="Content moved from original line ${c.line}">↕ moved from line ${c.line}</span>` : '';
   div.innerHTML = `
     <div class="revue-comment-author">${escHtml(authorLabel)}</div>
     <div class="revue-comment-body">${escHtml(c.body)}</div>
     <div class="revue-comment-meta">
-      <span>Line ${c.line}</span>
+      <span>Line ${c._displayLine || c.line}${driftLabel}</span>
       <span>${new Date(c.created).toLocaleString()}</span>
       <button class="reply-btn">Reply</button>
       <button class="resolve-btn">${c.resolved ? 'Unresolve' : 'Resolve'}</button>
