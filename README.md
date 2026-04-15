@@ -9,7 +9,8 @@ A local web-based code review tool for git diffs. Browse changes in the browser,
 ### As a Copilot CLI plugin (recommended)
 
 ```bash
-copilot plugin install chsienki/revue
+copilot plugin marketplace add chsienki/copilot-marketplace
+copilot plugin install revue@chsienki
 ```
 
 Restart Copilot CLI to pick it up. The platform-specific binary is downloaded automatically on first use.
@@ -17,7 +18,7 @@ Restart Copilot CLI to pick it up. The platform-specific binary is downloaded au
 To update:
 
 ```bash
-copilot plugin update revue
+copilot plugin update revue@chsienki
 ```
 
 ### Standalone (development)

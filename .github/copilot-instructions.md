@@ -157,9 +157,10 @@ cd src
 DOTNET_WATCH_SUPPRESS_LAUNCH_BROWSER=true dotnet watch --no-launch-profile -- /path/to/repo
 ```
 
-To install as a Copilot plugin (from GitHub marketplace):
+To install as a Copilot plugin (from marketplace):
 ```bash
-copilot plugin install chsienki/revue
+copilot plugin marketplace add chsienki/copilot-marketplace
+copilot plugin install revue@chsienki
 ```
 
 To install locally for development:
@@ -169,7 +170,7 @@ dotnet install.cs
 
 To update the plugin:
 ```bash
-copilot plugin update revue
+copilot plugin update revue@chsienki
 ```
 
 ## Browser inspection with Chrome DevTools MCP
