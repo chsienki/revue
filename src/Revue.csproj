@@ -8,6 +8,7 @@
   </PropertyGroup>
   <ItemGroup>
     <EmbeddedResource Include="..\static\index.html" LogicalName="index.html" />
+    <EmbeddedResource Include="..\static\icon.svg" LogicalName="icon.svg" />
   </ItemGroup>
   <Target Name="SetVersionFromFile" BeforeTargets="GetAssemblyVersion;GenerateAssemblyInfo">
     <ReadLinesFromFile File="$(MSBuildThisFileDirectory)..\VERSION">
