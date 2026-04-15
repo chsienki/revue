@@ -173,6 +173,46 @@ To update the plugin:
 copilot plugin update revue@chsienki
 ```
 
+## Releasing a new version
+
+The release process is tag-driven. A GitHub Actions workflow builds platform-specific binaries and creates a GitHub Release.
+
+### Steps to cut a release
+
+1. **Bump the version** in all three places (they must match):
+   - `VERSION` (repo root — source of truth)
+   - `skills/revue/VERSION` (copied into installed plugin, read by bootstrap)
+   - `plugin.json` `"version"` field
+2. **Commit** the version bump: `git commit -m "Bump version to X.Y.Z"`
+3. **Push and tag**:
+   ```bash
+   git push && git tag vX.Y.Z && git push origin vX.Y.Z
+   ```
+4. The `release.yml` workflow triggers on `v*` tags and:
+   - Validates all version sources match the tag
+   - Builds self-contained binaries for 6 RIDs (win-x64, win-arm64, linux-x64, linux-arm64, osx-x64, osx-arm64)
+   - Generates a changelog from commit messages since the previous tag
+   - Creates a GitHub Release with binary assets (.zip for Windows, .tar.gz for Linux/Mac)
+
+### How updates reach users
+
+1. User runs `copilot plugin update revue@chsienki` — pulls new skill files (including updated `VERSION`)
+2. Next time revue launches, the bootstrap script (`skills/revue/scripts/bootstrap.ps1` or `bootstrap.sh`) detects the version mismatch
+3. Bootstrap downloads the matching binary from GitHub Releases to the local cache
+4. The revue web UI also checks for updates on startup (hits GitHub Releases API in background) and shows a blue info banner if a newer version exists
+
+### Version infrastructure
+
+- `VERSION` → read by `Revue.csproj` via MSBuild target `SetVersionFromFile` to set `Version` and `InformationalVersion`
+- `InformationalVersion` format: `X.Y.Z+<short-git-hash>` (e.g., `0.4.0+bc3fafa`)
+- The binary supports `--version` flag which prints the InformationalVersion
+- Bootstrap scripts check `--version` output to verify cached binaries match the expected version
+- The `/api/config` endpoint exposes `version`, `commitHash`, `latestVersion`, and `updateCommand`
+
+### Marketplace
+
+The plugin is listed in the `chsienki/copilot-marketplace` repo. The marketplace `version` field is informational only — the real version comes from `plugin.json` in this repo. You don't need to update the marketplace for every release, but you can if you want `copilot plugin marketplace browse chsienki` to show accurate numbers.
+
 ## Browser inspection with Chrome DevTools MCP
 
 The user has a Chrome DevTools MCP server configured at `~/.copilot/mcp-config.json` that connects to Edge via `--browserUrl http://127.0.0.1:9222`.
@@ -205,6 +245,7 @@ This gives the user a fully normal Edge window (movable, resizable, F12 DevTools
 - **Add a new theme color**: Add the variable to BOTH `[data-theme="dark"]` and `[data-theme="light"]` in `index.html`
 - **Add a new setting**: Add HTML in `#settings-panel`, wire up in `init()` alongside other settings, persist with `savePref()`/`loadPref()`
 - **Add a new static file**: Add the file to `static/`, add an explicit `app.MapGet()` route in `Program.cs`
+- **Cut a new release**: Bump version in `VERSION`, `skills/revue/VERSION`, and `plugin.json`, commit, push, tag with `vX.Y.Z`, push the tag
 
 ## What NOT to do
 
