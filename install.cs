@@ -8,7 +8,7 @@ using System.Runtime.CompilerServices;
 var scriptDir = GetScriptDir();
 var repoRoot = Capture("git", $"-C {Quote(scriptDir)} rev-parse --show-toplevel").Trim().Replace('/', Path.DirectorySeparatorChar);
 var srcDir = Path.Combine(repoRoot, "src");
-var skillSourceDir = Path.Combine(repoRoot, "skill");
+var skillSourceDir = repoRoot;
 
 var rid = args.Length > 0 ? args[0] : GetDefaultRid();
 var tempDir = Path.Combine(Path.GetTempPath(), $"revue-install-{Guid.NewGuid():N}");
@@ -28,6 +28,10 @@ try
     File.Copy(
         Path.Combine(skillSourceDir, "skills", "revue", "SKILL.md"),
         Path.Combine(pluginSkillDir, "SKILL.md"));
+
+    File.Copy(
+        Path.Combine(skillSourceDir, "skills", "revue", "VERSION"),
+        Path.Combine(pluginSkillDir, "VERSION"));
 
     CopyDirectory(
         Path.Combine(skillSourceDir, "skills", "revue", "scripts"),

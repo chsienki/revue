@@ -9,13 +9,18 @@
   <ItemGroup>
     <EmbeddedResource Include="..\static\index.html" LogicalName="index.html" />
   </ItemGroup>
-  <Target Name="SetGitVersion" BeforeTargets="GetAssemblyVersion;GenerateAssemblyInfo">
+  <Target Name="SetVersionFromFile" BeforeTargets="GetAssemblyVersion;GenerateAssemblyInfo">
+    <ReadLinesFromFile File="$(MSBuildThisFileDirectory)..\VERSION">
+      <Output TaskParameter="Lines" PropertyName="VersionFromFile" />
+    </ReadLinesFromFile>
     <Exec Command="git rev-parse --short HEAD" ConsoleToMSBuild="true" StandardOutputImportance="low" IgnoreExitCode="true">
       <Output TaskParameter="ConsoleOutput" PropertyName="GitCommitShort" />
     </Exec>
     <PropertyGroup>
+      <VersionFromFile Condition="'$(VersionFromFile)' == ''">0.0.0</VersionFromFile>
       <GitCommitShort Condition="'$(GitCommitShort)' == ''">unknown</GitCommitShort>
-      <InformationalVersion>$(GitCommitShort)</InformationalVersion>
+      <Version>$(VersionFromFile)</Version>
+      <InformationalVersion>$(VersionFromFile)+$(GitCommitShort)</InformationalVersion>
     </PropertyGroup>
   </Target>
 </Project>

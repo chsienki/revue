@@ -7,6 +7,15 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Revue;
 
+// ── Version flag ──────────────────────────────────────────────────────────────
+if (args.Length > 0 && args[0] is "--version" or "-v")
+{
+    var ver = Assembly.GetExecutingAssembly()
+        .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "dev";
+    Console.WriteLine(ver);
+    return;
+}
+
 // ── Repo root ────────────────────────────────────────────────────────────────
 var startPath = args.Length > 0 ? args[0] : Directory.GetCurrentDirectory();
 var repoRoot = FindRepoRoot(startPath);

@@ -6,18 +6,23 @@ A local web-based code review tool for git diffs. Browse changes in the browser,
 
 ## Install
 
-Requires [.NET 9+ SDK](https://dotnet.microsoft.com/download) and `git` on your PATH.
-
 ### As a Copilot CLI plugin (recommended)
 
 ```bash
-git clone https://github.com/chsienki/revue
-dotnet ./revue/install.cs
+copilot plugin install chsienki/revue
 ```
 
-This builds a self-contained binary and installs it as a Copilot CLI plugin with the `revue` skill. Restart Copilot CLI to pick it up.
+Restart Copilot CLI to pick it up. The platform-specific binary is downloaded automatically on first use.
 
-### Standalone
+To update:
+
+```bash
+copilot plugin update revue
+```
+
+### Standalone (development)
+
+Requires [.NET 10+ SDK](https://dotnet.microsoft.com/download) and `git` on your PATH.
 
 ```bash
 # Run directly from source
@@ -27,6 +32,13 @@ dotnet run -- /path/to/your/repo
 # Or publish a self-contained binary
 dotnet publish src -c Release -r win-x64 --self-contained -o dist
 ./dist/revue /path/to/your/repo
+```
+
+You can also build and install the plugin locally for development:
+
+```bash
+git clone https://github.com/chsienki/revue
+dotnet ./revue/install.cs
 ```
 
 revue auto-detects a free port starting at 7878 and opens your browser.
@@ -102,13 +114,20 @@ revue/
 │   ├── index.html          # Entire frontend (HTML + CSS + JS, no build step)
 │   ├── icon.svg            # App icon (🎭 emoji)
 │   └── manifest.json       # Web app manifest for standalone mode
-├── skill/                  # Copilot CLI plugin
-│   ├── plugin.json
-│   └── skills/revue/
-│       └── SKILL.md
-├── install.cs              # Build + install as Copilot plugin
+├── skills/revue/           # Copilot CLI skill
+│   ├── SKILL.md
+│   ├── VERSION             # Expected binary version
+│   └── scripts/
+│       ├── bootstrap.ps1   # Binary download/cache (PowerShell)
+│       ├── bootstrap.sh    # Binary download/cache (bash)
+│       └── read_comments.sh
+├── plugin.json             # Copilot CLI plugin manifest
+├── VERSION                 # Release version (source of truth)
+├── install.cs              # Local dev build + install
 └── .github/
-    └── copilot-instructions.md
+    ├── copilot-instructions.md
+    └── workflows/
+        └── release.yml     # Build + publish binaries on tag
 ```
 
 ## API

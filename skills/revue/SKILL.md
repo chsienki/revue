@@ -29,12 +29,24 @@ This skill provides two capabilities:
 
 Start the revue server for the **current repository** so the user can review diffs in the browser.
 
-**IMPORTANT: revue is NOT an npm package, pip package, or system tool. It is a .NET binary bundled with this skill. Do NOT try npx, npm, pip, brew, or any package manager. Follow these steps exactly:**
+**IMPORTANT: revue is NOT an npm package, pip package, or system tool. It is a .NET binary that must be bootstrapped via the script bundled with this skill. Do NOT try npx, npm, pip, brew, or any package manager. Follow these steps exactly:**
 
-1. Find the `revue` executable bundled with this skill. It is in the same directory as this SKILL.md file, inside the Copilot installed plugins directory. **This is always the first step — do not skip it or try alternatives.**
-   - **Windows**: `Get-ChildItem -Path "$env:USERPROFILE\.copilot\installed-plugins" -Filter "revue.exe" -Recurse | Select-Object -First 1 -ExpandProperty FullName`
-   - **macOS/Linux**: `find ~/.copilot/installed-plugins -name revue -type f | head -1`
-2. Start the server as a **detached background process** so it keeps running while the user continues chatting:
+1. Run the **bootstrap script** bundled with this skill to ensure the revue binary is downloaded and up-to-date. The bootstrap script is in the `scripts/` subdirectory next to this SKILL.md file.
+   - **Windows (PowerShell)**:
+     ```powershell
+     $copilotHome = if ($env:COPILOT_HOME) { $env:COPILOT_HOME } else { "$env:USERPROFILE\.copilot" }
+     $bootstrapScript = Get-ChildItem -Path "$copilotHome\installed-plugins" -Filter "bootstrap.ps1" -Recurse | Where-Object { $_.FullName -match 'revue' } | Select-Object -First 1 -ExpandProperty FullName
+     $revueExe = & pwsh -File $bootstrapScript
+     ```
+   - **macOS/Linux (bash)**:
+     ```bash
+     copilot_home="${COPILOT_HOME:-$HOME/.copilot}"
+     bootstrap_script=$(find "$copilot_home/installed-plugins" -path '*/revue/scripts/bootstrap.sh' -type f | head -1)
+     revue_exe=$(bash "$bootstrap_script")
+     ```
+   The script prints the path to the revue executable as its last line of output. Capture this path.
+
+2. Start the server as a **detached background process** using the path returned by the bootstrap script:
    ```
    <path-to-revue-exe> <current-repo-root>
    ```
@@ -46,6 +58,7 @@ Start the revue server for the **current repository** so the user can review dif
 ### Important
 
 - **Do NOT use npx, npm, pip, or any package manager to find or run revue.**
+- The bootstrap script handles downloading the correct platform-specific binary automatically.
 - The server **must** be started as a detached process (it needs to stay alive).
 - Don't wait for the server to exit — it runs until the user stops it.
 

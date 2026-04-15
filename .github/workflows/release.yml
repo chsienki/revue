@@ -1,0 +1,146 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  validate-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate version consistency
+        run: |
+          ROOT_VERSION="$(cat VERSION | tr -d '[:space:]')"
+          SKILL_VERSION="$(cat skills/revue/VERSION | tr -d '[:space:]')"
+          PLUGIN_VERSION="$(jq -r .version plugin.json)"
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+
+          echo "Tag:     $TAG_VERSION"
+          echo "Root:    $ROOT_VERSION"
+          echo "Skill:   $SKILL_VERSION"
+          echo "Plugin:  $PLUGIN_VERSION"
+
+          ERRORS=0
+          if [ "$TAG_VERSION" != "$ROOT_VERSION" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match VERSION file ($ROOT_VERSION)"
+            ERRORS=1
+          fi
+          if [ "$ROOT_VERSION" != "$SKILL_VERSION" ]; then
+            echo "::error::skills/revue/VERSION ($SKILL_VERSION) does not match root VERSION ($ROOT_VERSION)"
+            ERRORS=1
+          fi
+          if [ "$ROOT_VERSION" != "$PLUGIN_VERSION" ]; then
+            echo "::error::plugin.json version ($PLUGIN_VERSION) does not match root VERSION ($ROOT_VERSION)"
+            ERRORS=1
+          fi
+          exit $ERRORS
+
+  build:
+    needs: validate-version
+    strategy:
+      matrix:
+        include:
+          - rid: win-x64
+            os: windows-latest
+            ext: zip
+          - rid: win-arm64
+            os: windows-latest
+            ext: zip
+          - rid: linux-x64
+            os: ubuntu-latest
+            ext: tar.gz
+          - rid: linux-arm64
+            os: ubuntu-latest
+            ext: tar.gz
+          - rid: osx-x64
+            os: macos-latest
+            ext: tar.gz
+          - rid: osx-arm64
+            os: macos-latest
+            ext: tar.gz
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          dotnet-quality: 'preview'
+
+      - name: Publish
+        run: >
+          dotnet publish src
+          -c Release
+          -r ${{ matrix.rid }}
+          --self-contained
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:DebugType=none
+          -o publish
+
+      - name: Package (zip)
+        if: matrix.ext == 'zip'
+        shell: pwsh
+        run: |
+          $exeName = if ("${{ matrix.rid }}".StartsWith("win")) { "revue.exe" } else { "revue" }
+          Compress-Archive -Path "publish/$exeName" -DestinationPath "revue-${{ matrix.rid }}.zip"
+
+      - name: Package (tar.gz)
+        if: matrix.ext == 'tar.gz'
+        run: |
+          exe_name="revue"
+          tar -czf "revue-${{ matrix.rid }}.tar.gz" -C publish "$exe_name"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: revue-${{ matrix.rid }}
+          path: revue-${{ matrix.rid }}.${{ matrix.ext }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version
+        id: version
+        run: echo "version=$(cat VERSION | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: revue ${{ steps.version.outputs.version }}
+          body: |
+            ## Install
+
+            ```
+            copilot plugin install chsienki/revue
+            ```
+
+            The binary is downloaded automatically on first use.
+
+            ## Update
+
+            ```
+            copilot plugin update revue
+            ```
+          files: artifacts/*
+          fail_on_unmatched_files: true

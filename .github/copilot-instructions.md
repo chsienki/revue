@@ -4,7 +4,7 @@ revue is a local web-based git diff reviewer written in C# (ASP.NET Core minimal
 
 ## Tech stack
 
-- **Backend**: C# 12, .NET 9, ASP.NET Core minimal API (no controllers)
+- **Backend**: C# 12, .NET 10, ASP.NET Core minimal API (no controllers)
 - **Frontend**: Single HTML file (`static/index.html`), vanilla JS, [diff2html](https://diff2html.xyz/) via CDN
 - **No build step for frontend** — just HTML/JS served as static files
 - **Git operations**: All via `System.Diagnostics.Process` calling the `git` CLI — no libgit2 or similar
@@ -21,11 +21,16 @@ static/
 ├── index.html        # Entire frontend — layout, styles, JS all in one file
 ├── icon.svg          # App icon (emoji 🎭 on purple gradient, used for favicon + manifest)
 └── manifest.json     # Web app manifest for standalone app mode
-skill/
-└── skills/revue/
-    ├── SKILL.md              # Copilot skill — triggered by "review my revue comments"
-    └── scripts/read_comments.sh
-install.cs                    # Build + install as Copilot CLI plugin (dotnet install.cs)
+skills/revue/
+├── SKILL.md              # Copilot skill — triggered by "review my revue comments"
+├── VERSION               # Expected binary version (must match VERSION at repo root)
+└── scripts/
+    ├── bootstrap.ps1     # Downloads platform-specific binary from GitHub Releases
+    ├── bootstrap.sh      # Bash fallback for bootstrap
+    └── read_comments.sh
+plugin.json               # Copilot CLI plugin manifest (at repo root for marketplace install)
+VERSION                   # Release version (source of truth, copied to skills/revue/VERSION)
+install.cs                # Local dev build + install as Copilot CLI plugin
 ```
 
 ## Key design decisions
@@ -152,9 +157,19 @@ cd src
 DOTNET_WATCH_SUPPRESS_LAUNCH_BROWSER=true dotnet watch --no-launch-profile -- /path/to/repo
 ```
 
-To install as a Copilot plugin:
+To install as a Copilot plugin (from GitHub marketplace):
+```bash
+copilot plugin install chsienki/revue
+```
+
+To install locally for development:
 ```bash
 dotnet install.cs
+```
+
+To update the plugin:
+```bash
+copilot plugin update revue
 ```
 
 ## Browser inspection with Chrome DevTools MCP

@@ -1,6 +1,6 @@
 {
   "name": "revue",
   "description": "Launch revue and review inline code comments from a local git diff tool",
-  "version": "1.0.0",
+  "version": "0.2.0",
   "skills": ["skills/"]
 }
