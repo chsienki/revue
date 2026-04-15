@@ -78,13 +78,50 @@ app.MapGet("/icon.svg", () =>
 // GET /api/config
 var fullVersion = Assembly.GetExecutingAssembly()
     .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "dev";
-// Strip source link metadata (e.g. "abc1234+full-sha" → "abc1234")
+// Strip source link metadata (e.g. "0.2.0+d52ebea.full-sha" → "0.2.0")
 var version = fullVersion.Split('+')[0];
+var commitHash = fullVersion.Contains('+') ? fullVersion.Split('+')[1].Split('.')[0] : null;
+
+// ── Background update check ──────────────────────────────────────────────────
+string? latestVersion = null;
+string? updateCommand = null;
+_ = Task.Run(async () =>
+{
+    try
+    {
+        using var http = new HttpClient();
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("revue-update-check");
+        http.Timeout = TimeSpan.FromSeconds(10);
+
+        // Use the GitHub API to get the latest release (avoids redirect-following issues)
+        var response = await http.GetAsync("https://api.github.com/repos/chsienki/revue/releases/latest");
+        if (!response.IsSuccessStatusCode) return;
+
+        using var doc = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
+        var tagName = doc.RootElement.GetProperty("tag_name").GetString();
+        if (tagName is null) return;
+
+        var latest = tagName.TrimStart('v');
+        if (latest != version && IsNewerVersion(latest, version))
+        {
+            latestVersion = latest;
+            updateCommand = "copilot plugin update revue@chsienki";
+        }
+    }
+    catch
+    {
+        // Silently ignore — update check is best-effort
+    }
+});
+
 app.MapGet("/api/config", () => Results.Json(new
 {
     defaultBase,
     repoRoot,
     version,
+    commitHash,
+    latestVersion,
+    updateCommand,
 }, jsonOpts));
 
 // GET /api/branches
@@ -440,4 +477,11 @@ static void OpenBrowser(string url)
             System.Diagnostics.Process.Start("xdg-open", url);
     }
     catch { /* best-effort */ }
+}
+
+static bool IsNewerVersion(string candidate, string current)
+{
+    if (Version.TryParse(candidate, out var c) && Version.TryParse(current, out var v))
+        return c > v;
+    return string.Compare(candidate, current, StringComparison.Ordinal) > 0;
 }

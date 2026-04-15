@@ -41,6 +41,9 @@
     --warning-bg: #3a3200;
     --warning-border: #cca700;
     --warning-text: #e0c060;
+    --info-bg: #0e2a47;
+    --info-border: #007acc;
+    --info-text: #6cb6ff;
   }
 
   /* Light theme — GitHub-inspired clean white */
@@ -66,6 +69,9 @@
     --warning-bg: #fff8e1;
     --warning-border: #c69500;
     --warning-text: #6d5300;
+    --info-bg: #ddf4ff;
+    --info-border: #0969da;
+    --info-text: #0550ae;
   }
 
   body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 0.8125rem; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
@@ -102,6 +108,36 @@
     color: var(--warning-text);
     font-size: 1rem;
     padding: 0 4px;
+  }
+
+  #update-banner {
+    display: none;
+    background: var(--info-bg);
+    border-bottom: 1px solid var(--info-border);
+    color: var(--info-text);
+    padding: 6px 12px;
+    font-size: 0.8125rem;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+  #update-banner.active { display: flex; }
+  #update-banner .update-msg { flex: 1; }
+  #update-banner code {
+    background: var(--info-border);
+    color: #fff;
+    padding: 1px 6px;
+    border-radius: var(--radius);
+    font-family: var(--mono);
+    font-size: 0.75rem;
+  }
+  #update-banner .dismiss-btn {
+    background: transparent;
+    color: var(--info-text);
+    font-size: 1rem;
+    padding: 0 4px;
+    border: none;
+    cursor: pointer;
   }
 
   /* Top bar */
@@ -554,6 +590,12 @@
   <button class="dismiss-btn" id="stale-dismiss" title="Dismiss">✕</button>
 </div>
 
+<div id="update-banner">
+  <span>🔄</span>
+  <span class="update-msg" id="update-msg"></span>
+  <button class="dismiss-btn" id="update-dismiss" title="Dismiss">✕</button>
+</div>
+
 <div id="main">
   <div id="filelist">
     <div id="filelist-header">Files</div>
@@ -685,7 +727,18 @@ async function init() {
   state.logBase = state.base;
   state.logHead = state.head;
 
-  if (cfg.version) document.getElementById('version-label').textContent = cfg.version;
+  if (cfg.version) {
+    const hash = cfg.commitHash ? ` (${cfg.commitHash})` : '';
+    document.getElementById('version-label').textContent = `v${cfg.version}${hash}`;
+  }
+
+  if (cfg.latestVersion && cfg.updateCommand) {
+    const updateBanner = document.getElementById('update-banner');
+    document.getElementById('update-msg').innerHTML =
+      `revue <b>${cfg.latestVersion}</b> is available (current: ${cfg.version}). Run <code>${cfg.updateCommand}</code> then restart.`;
+    updateBanner.classList.add('active');
+    document.getElementById('update-dismiss').addEventListener('click', () => updateBanner.classList.remove('active'));
+  }
 
   const baseSel = document.getElementById('base-sel');
   const headSel = document.getElementById('head-sel');
