@@ -140,6 +140,37 @@
     cursor: pointer;
   }
 
+  #changes-banner {
+    display: none;
+    background: var(--info-bg);
+    border-bottom: 1px solid var(--info-border);
+    color: var(--info-text);
+    padding: 6px 12px;
+    font-size: 0.8125rem;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+  #changes-banner.active { display: flex; }
+  #changes-banner .update-msg { flex: 1; }
+  #changes-banner button {
+    background: var(--info-border);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius);
+    padding: 3px 10px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 0.8125rem;
+  }
+  #changes-banner button:hover { opacity: 0.85; }
+  #changes-banner .dismiss-btn {
+    background: transparent;
+    color: var(--info-text);
+    font-size: 1rem;
+    padding: 0 4px;
+  }
+
   /* Top bar */
   #topbar {
     background: var(--bg2);
@@ -596,6 +627,13 @@
   <button class="dismiss-btn" id="update-dismiss" title="Dismiss">✕</button>
 </div>
 
+<div id="changes-banner">
+  <span>🔔</span>
+  <span class="update-msg" id="changes-msg"></span>
+  <button id="changes-reload-btn">Reload</button>
+  <button class="dismiss-btn" id="changes-dismiss" title="Dismiss">✕</button>
+</div>
+
 <div id="main">
   <div id="filelist">
     <div id="filelist-header">Files</div>
@@ -833,6 +871,58 @@ function setupFilelistResize() {
     document.addEventListener('mouseup', onUp);
   });
 }
+
+// ── Background change polling ─────────────────────────────────────────────
+
+(function startPolling() {
+  let lastDiffHash = null;
+  let lastCommentsJson = null;
+  let dismissed = false;
+
+  const banner = document.getElementById('changes-banner');
+  const msg = document.getElementById('changes-msg');
+
+  document.getElementById('changes-reload-btn').addEventListener('click', () => {
+    banner.classList.remove('active');
+    dismissed = false;
+    loadFiles();
+  });
+  document.getElementById('changes-dismiss').addEventListener('click', () => {
+    banner.classList.remove('active');
+    dismissed = true;
+  });
+
+  async function poll() {
+    try {
+      // Check for comment changes (new replies, new comments)
+      const comments = await api('/api/comments');
+      const commentsJson = JSON.stringify(comments);
+      const commentsChanged = lastCommentsJson !== null && commentsJson !== lastCommentsJson;
+      lastCommentsJson = commentsJson;
+
+      // If comments changed, update state silently so next render picks them up
+      if (commentsChanged) state.comments = comments;
+
+      // Check for file/diff changes
+      const { hash } = await api(`/api/changes-hash?base=${encodeURIComponent(state.base)}&head=${encodeURIComponent(state.head)}`);
+      const diffChanged = lastDiffHash !== null && hash !== lastDiffHash;
+      lastDiffHash = hash;
+
+      // Show banner if something changed
+      if (!dismissed && (commentsChanged || diffChanged)) {
+        const parts = [];
+        if (diffChanged) parts.push('Files changed on disk');
+        if (commentsChanged) parts.push('New comment activity');
+        msg.textContent = parts.join(' · ');
+        banner.classList.add('active');
+      }
+    } catch { /* ignore polling errors */ }
+  }
+
+  // Initialize baselines without showing banner
+  poll();
+  setInterval(poll, 5000);
+})();
 
 // ── Files ──────────────────────────────────────────────────────────────────
 

@@ -140,6 +140,33 @@ app.MapGet("/api/branches", () =>
     catch (Exception ex) { return Results.Problem(ex.Message); }
 });
 
+// GET /api/changes-hash?base=X&head=Y — lightweight fingerprint for polling
+app.MapGet("/api/changes-hash", (string? @base, string? head) =>
+{
+    try
+    {
+        var b = @base ?? defaultBase;
+        var h = head ?? "HEAD";
+        string stat;
+        if (h == "HEAD")
+        {
+            var mergeBase = GitHelper.GetMergeBase(b, "HEAD", repoRoot);
+            stat = GitHelper.RunGit(["diff", "--stat", mergeBase], repoRoot);
+            var untracked = GitHelper.RunGit(["ls-files", "--others", "--exclude-standard"], repoRoot);
+            stat += untracked;
+        }
+        else
+        {
+            stat = GitHelper.RunGit(["diff", "--stat", $"{b}...{h}"], repoRoot);
+        }
+        var hash = Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(stat)))[..16];
+        return Results.Json(new { hash }, jsonOpts);
+    }
+    catch (Exception ex) { return Results.Problem(ex.Message); }
+});
+
 // GET /api/log?base=X&head=Y
 app.MapGet("/api/log", (string? @base, string? head) =>
 {
