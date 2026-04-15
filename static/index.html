@@ -719,6 +719,11 @@ async function apiDelete(path) {
   if (!r.ok) throw new Error(`API error ${r.status}: ${await r.text()}`);
 }
 
+async function reloadComments() {
+  await reloadComments();
+  if (window.resetCommentsBaseline) window.resetCommentsBaseline();
+}
+
 // ── Stale ref detection ───────────────────────────────────────────────────
 
 async function checkBaseRefStatus() {
@@ -807,7 +812,7 @@ async function init() {
     if (!resolved.length) return;
     if (!confirm(`Delete ${resolved.length} resolved comment${resolved.length > 1 ? 's' : ''}?`)) return;
     await apiPost('/api/comments/delete-batch', resolved.map(c => c.id));
-    state.comments = await api('/api/comments');
+    await reloadComments();
     renderFileList();
     await renderAllDiffs();
   });
@@ -879,6 +884,11 @@ function setupFilelistResize() {
   let lastCommentsJson = null;
   let dismissed = false;
 
+  // Called by UI actions that modify comments, so polling doesn't flag our own changes
+  window.resetCommentsBaseline = () => {
+    lastCommentsJson = JSON.stringify(state.comments);
+  };
+
   const banner = document.getElementById('changes-banner');
   const msg = document.getElementById('changes-msg');
 
@@ -934,7 +944,7 @@ async function loadFiles() {
   checkBaseRefStatus();
   // Yield to let the browser paint the overlay before heavy work
   await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-  state.comments = await api('/api/comments');
+  await reloadComments();
   try {
     state.files = await api(`/api/diff?base=${encodeURIComponent(state.base)}&head=${encodeURIComponent(state.head)}&ignoreWhitespace=${state.ignoreWhitespace}`);
   } catch(e) {
@@ -1188,7 +1198,7 @@ async function renderAllDiffs() {
     section.querySelector('#delete-all-orphaned').addEventListener('click', async () => {
       if (!confirm(`Delete ${orphaned.length} orphaned comment${orphaned.length > 1 ? 's' : ''}?`)) return;
       await apiPost('/api/comments/delete-batch', orphaned.map(c => c.id));
-      state.comments = await api('/api/comments');
+      await reloadComments();
       renderFileList();
       await renderAllDiffs();
     });
@@ -1198,13 +1208,13 @@ async function renderAllDiffs() {
       if (!c) return;
       el.querySelector('.resolve-btn').addEventListener('click', async () => {
         await apiPost('/api/comments', {...c, resolved: !c.resolved});
-        state.comments = await api('/api/comments');
+        await reloadComments();
         renderFileList();
         await renderAllDiffs();
       });
       el.querySelector('.delete-btn').addEventListener('click', async () => {
         await apiDelete(`/api/comments/${id}`);
-        state.comments = await api('/api/comments');
+        await reloadComments();
         renderFileList();
         await renderAllDiffs();
       });
@@ -1433,20 +1443,20 @@ function renderCommentItem(container, c, file) {
       const body = inputDiv.querySelector('textarea').value.trim();
       if (!body) return;
       await apiPost(`/api/comments/${c.id}/replies`, { author: 'user', body });
-      state.comments = await api('/api/comments');
+      await reloadComments();
       renderFileList();
       await renderAllDiffs();
     });
   });
   div.querySelector('.resolve-btn').addEventListener('click', async () => {
     await apiPost('/api/comments', {...c, resolved: !c.resolved});
-    state.comments = await api('/api/comments');
+    await reloadComments();
     renderFileList();
     await renderAllDiffs();
   });
   div.querySelector('.delete-btn').addEventListener('click', async () => {
     await apiDelete(`/api/comments/${c.id}`);
-    state.comments = await api('/api/comments');
+    await reloadComments();
     renderFileList();
     await renderAllDiffs();
   });
@@ -1707,7 +1717,7 @@ function showCommentInput(tr, file, line, lineContent, side, prefillText) {
     const body = wrap.querySelector('textarea').value.trim();
     if (!body) return;
     await apiPost('/api/comments', { file, line, line_content: lineContent, base: state.base, head: state.head, side, body, author: 'user' });
-    state.comments = await api('/api/comments');
+    await reloadComments();
     cleanup();
     renderFileList();
     await renderAllDiffs();
