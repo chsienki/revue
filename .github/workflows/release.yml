@@ -112,6 +112,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Read version
         id: version
@@ -123,24 +125,48 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Find the previous tag
+          PREV_TAG=$(git tag --sort=-v:refname | grep '^v' | sed -n '2p')
+          if [ -n "$PREV_TAG" ]; then
+            echo "Previous tag: $PREV_TAG"
+            CHANGES=$(git log --pretty=format:"- %s" "$PREV_TAG..${{ github.ref_name }}" -- | grep -v "^- Bump version")
+          else
+            CHANGES=$(git log --pretty=format:"- %s" "${{ github.ref_name }}" -- | grep -v "^- Bump version")
+          fi
+          echo "$CHANGES" > /tmp/changelog.txt
+
+      - name: Prepare release body
+        run: |
+          CHANGES=$(cat /tmp/changelog.txt)
+          {
+            echo "## What's New"
+            echo ""
+            echo "$CHANGES"
+            echo ""
+            echo "## Install"
+            echo ""
+            echo '```'
+            echo "copilot plugin marketplace add chsienki/copilot-marketplace"
+            echo "copilot plugin install revue@chsienki"
+            echo '```'
+            echo ""
+            echo "The binary is downloaded automatically on first use."
+            echo ""
+            echo "## Update"
+            echo ""
+            echo '```'
+            echo "copilot plugin update revue@chsienki"
+            echo '```'
+          } > /tmp/release-body.md
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: revue ${{ steps.version.outputs.version }}
-          body: |
-            ## Install
-
-            ```
-            copilot plugin install chsienki/revue
-            ```
-
-            The binary is downloaded automatically on first use.
-
-            ## Update
-
-            ```
-            copilot plugin update revue
-            ```
+          body_path: /tmp/release-body.md
           files: artifacts/*
           fail_on_unmatched_files: true
