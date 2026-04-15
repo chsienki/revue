@@ -79,8 +79,7 @@ Start the revue server for the **current repository** so the user can review dif
 
 1. Read `.revue/comments.json` from the current repository root
 2. For each **unresolved** comment (`"resolved": false`), show:
-   - The **file path** and **line number**
-   - The **line content** (the actual code on that line)
+   - The **file path** and **line content** (the actual code the comment targets)
    - The **comment body** (what the developer wrote)
 3. Respond to each comment as a thoughtful code reviewer would:
    - If it's a question → answer it
@@ -88,6 +87,14 @@ Start the revue server for the **current repository** so the user can review dif
    - If it's a TODO → acknowledge and propose concrete next steps
    - If it's pointing out a bug → explain the issue and suggest a fix
 4. After addressing all comments, offer a brief summary
+
+### Locating Comments in Code (Important!)
+
+**The `line` field in a comment may be stale.** If you or the user have edited the file since the comment was placed, lines may have shifted. Always use `lineContent` as the ground truth for finding what code a comment refers to:
+
+1. Open the file and search for the `lineContent` string — that's the actual line the user commented on.
+2. If the content at the stored `line` number doesn't match `lineContent`, search nearby lines (the content likely shifted due to insertions/deletions above it).
+3. When making edits to address multiple comments in the same file, be aware that each edit shifts subsequent line numbers. **Read all comments for a file first**, locate them by content, then make edits. Don't re-read the stored `line` after editing — it will be wrong.
 
 ### Comment Schema
 
