@@ -462,6 +462,63 @@
   td.d2h-code-linenumber.d2h-info { display: table-cell !important; }
   .d2h-tag { background: var(--bg3) !important; color: var(--text-dim) !important; border-radius: var(--radius) !important; padding: 1px 6px !important; margin-left: 8px !important; font-size: 0.625rem !important; }
 
+  /* Per-file word wrap (toggled via checkbox in file header) */
+  /* Use table-layout: fixed so columns don't auto-grow to longest line */
+  .d2h-file-wrapper.revue-wrap .d2h-diff-table {
+    table-layout: fixed !important;
+    width: 100% !important;
+    min-width: 0 !important;
+  }
+  /* Constrain line-number columns; let content take the rest */
+  .d2h-file-wrapper.revue-wrap td.d2h-code-side-linenumber,
+  .d2h-file-wrapper.revue-wrap td.d2h-code-linenumber {
+    width: 3.5em !important;
+  }
+  /* Use flexbox on the line container so the prefix sits beside a flex-grow
+     content span that wraps within the remaining width. We must NOT use
+     pre-wrap on the outer container because diff2html's HTML has literal
+     newlines/indentation between child <span>s — pre-wrap there would render
+     them as visible empty lines and inflate row heights. */
+  .d2h-file-wrapper.revue-wrap .d2h-code-side-line,
+  .d2h-file-wrapper.revue-wrap td.d2h-code-line {
+    display: flex !important;
+    align-items: flex-start !important;
+    overflow: hidden !important;
+    width: auto !important;
+    white-space: normal !important;
+    padding: 2px 0.5em !important;
+    line-height: 1.4 !important;
+  }
+  .d2h-file-wrapper.revue-wrap .d2h-code-line-prefix {
+    flex: 0 0 auto !important;
+  }
+  .d2h-file-wrapper.revue-wrap .d2h-code-line-ctn {
+    flex: 1 1 0 !important;
+    min-width: 0 !important;
+    white-space: pre-wrap !important;
+    word-break: break-word !important;
+    overflow-wrap: anywhere !important;
+  }
+  /* Linenumber cells need matching vertical padding so they align with
+     synced row heights (they don't use flex, so add it here). */
+  .d2h-file-wrapper.revue-wrap td.d2h-code-side-linenumber,
+  .d2h-file-wrapper.revue-wrap td.d2h-code-linenumber {
+    padding: 2px 0 !important;
+    vertical-align: top !important;
+  }
+  /* Hide horizontal scrollbars when wrapping */
+  .d2h-file-wrapper.revue-wrap .d2h-file-side-diff,
+  .d2h-file-wrapper.revue-wrap .d2h-files-diff > .d2h-file-side-diff,
+  .d2h-file-wrapper.revue-wrap .d2h-code-wrapper { overflow-x: hidden !important; }
+
+  .revue-wrap-toggle {
+    display: inline-flex; align-items: center; gap: 4px;
+    margin-left: auto; font-size: 0.6875rem; color: var(--text-dim);
+    cursor: pointer; user-select: none; padding: 0 4px;
+  }
+  .revue-wrap-toggle input { margin: 0; cursor: pointer; }
+  .d2h-file-header { display: flex !important; align-items: center !important; }
+
   /* Expand context button on hunk headers */
   .revue-expand-btn { background: none; border: none; color: inherit; cursor: pointer; font-size: 0.75rem; padding: 0; line-height: 1; }
 
@@ -680,6 +737,8 @@ state.ignoreWhitespace = loadPref('ignoreWhitespace', 'false') === 'true';
 state.diffLayout = loadPref('diffLayout', 'side-by-side');
 state.showResolved = loadPref('showResolved', 'true') === 'true';
 state.theme = loadPref('theme', 'auto');
+state.wrappedFiles = new Set(loadPref('wrappedFiles', '').split('\n').filter(Boolean));
+function saveWrappedFiles() { savePref('wrappedFiles', [...state.wrappedFiles].join('\n')); }
 
 function applyTheme(theme) {
   const resolved = theme === 'auto'
@@ -720,7 +779,7 @@ async function apiDelete(path) {
 }
 
 async function reloadComments() {
-  await reloadComments();
+  state.comments = await api('/api/comments');
   if (window.resetCommentsBaseline) window.resetCommentsBaseline();
 }
 
@@ -1164,6 +1223,8 @@ async function renderAllDiffs() {
   state.files.forEach((f, i) => {
     if (i >= fileWrappers.length) return;
     fileWrappers[i].id = `file-${encodeFileId(f.file)}`;
+    if (state.wrappedFiles.has(f.file)) fileWrappers[i].classList.add('revue-wrap');
+    injectWrapToggle(f.file, fileWrappers[i]);
     const injected = injectComments(f.file, f.patch, fileWrappers[i]);
     injected.forEach(id => injectedIds.add(id));
     attachLineClickHandlers(f.file, f.patch, fileWrappers[i]);
@@ -1478,6 +1539,102 @@ function renderCommentItem(container, c, file) {
     await renderAllDiffs();
   });
   container.appendChild(div);
+}
+
+// ── Per-file word-wrap toggle ──────────────────────────────────────────────
+
+function injectWrapToggle(file, wrapper) {
+  const header = wrapper.querySelector('.d2h-file-header');
+  if (!header || header.querySelector('.revue-wrap-toggle')) return;
+  const label = document.createElement('label');
+  label.className = 'revue-wrap-toggle';
+  label.title = 'Wrap long lines in this file';
+  const checked = state.wrappedFiles.has(file) ? 'checked' : '';
+  label.innerHTML = `<input type="checkbox" ${checked}><span>wrap</span>`;
+  const input = label.querySelector('input');
+  input.addEventListener('click', e => e.stopPropagation());
+  input.addEventListener('change', () => {
+    if (input.checked) {
+      state.wrappedFiles.add(file);
+      wrapper.classList.add('revue-wrap');
+      syncSxsRowHeights(wrapper);
+      observeSxsForResize(wrapper);
+    } else {
+      state.wrappedFiles.delete(file);
+      wrapper.classList.remove('revue-wrap');
+      clearSxsRowHeights(wrapper);
+      unobserveSxsForResize(wrapper);
+    }
+    saveWrappedFiles();
+  });
+  header.appendChild(label);
+  // If wrap is already applied at render time, sync heights once layout is ready.
+  if (wrapper.classList.contains('revue-wrap')) {
+    requestAnimationFrame(() => {
+      syncSxsRowHeights(wrapper);
+      observeSxsForResize(wrapper);
+    });
+  }
+}
+
+// In SxS mode each side is its own table, so wrapped lines on one side won't
+// push the corresponding row on the other side taller. Sync heights manually.
+function getSxsTables(wrapper) {
+  const tables = wrapper.querySelectorAll('.d2h-file-side-diff > .d2h-code-wrapper > .d2h-diff-table, .d2h-file-side-diff .d2h-diff-table');
+  return tables.length === 2 ? [tables[0], tables[1]] : null;
+}
+
+function clearSxsRowHeights(wrapper) {
+  wrapper.querySelectorAll('tr[data-revue-synced]').forEach(tr => {
+    tr.style.height = '';
+    tr.removeAttribute('data-revue-synced');
+  });
+}
+
+function syncSxsRowHeights(wrapper) {
+  const tables = getSxsTables(wrapper);
+  if (!tables) return;
+  const left = tables[0].querySelectorAll(':scope > tbody > tr, :scope > tr');
+  const right = tables[1].querySelectorAll(':scope > tbody > tr, :scope > tr');
+  const n = Math.min(left.length, right.length);
+  // Reset first so we measure natural (fractional) heights.
+  for (let i = 0; i < n; i++) { left[i].style.height = ''; right[i].style.height = ''; }
+  // Measure with getBoundingClientRect for fractional precision, then round up
+  // so the result is consistent between both sides (offsetHeight truncates
+  // and accumulates drift over hundreds of rows).
+  const heights = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const lh = left[i].getBoundingClientRect().height;
+    const rh = right[i].getBoundingClientRect().height;
+    heights[i] = Math.ceil(Math.max(lh, rh));
+  }
+  for (let i = 0; i < n; i++) {
+    const h = heights[i] + 'px';
+    left[i].style.height = h;
+    right[i].style.height = h;
+    left[i].setAttribute('data-revue-synced', '1');
+    right[i].setAttribute('data-revue-synced', '1');
+  }
+}
+
+const _sxsObservers = new WeakMap();
+function observeSxsForResize(wrapper) {
+  if (_sxsObservers.has(wrapper)) return;
+  let scheduled = false;
+  const ro = new ResizeObserver(() => {
+    if (scheduled) return;
+    scheduled = true;
+    requestAnimationFrame(() => {
+      scheduled = false;
+      if (wrapper.classList.contains('revue-wrap')) syncSxsRowHeights(wrapper);
+    });
+  });
+  ro.observe(wrapper);
+  _sxsObservers.set(wrapper, ro);
+}
+function unobserveSxsForResize(wrapper) {
+  const ro = _sxsObservers.get(wrapper);
+  if (ro) { ro.disconnect(); _sxsObservers.delete(wrapper); }
 }
 
 // ── Line click → comment box ───────────────────────────────────────────────
