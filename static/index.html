@@ -947,6 +947,7 @@ async function loadFiles() {
   await reloadComments();
   try {
     state.files = await api(`/api/diff?base=${encodeURIComponent(state.base)}&head=${encodeURIComponent(state.head)}&ignoreWhitespace=${state.ignoreWhitespace}`);
+    sortFilesTreeOrder(state.files);
   } catch(e) {
     state.files = [];
     document.getElementById('diffview-content').innerHTML = `<div id="diffview-placeholder">Error: ${e.message}</div>`;
@@ -957,6 +958,22 @@ async function loadFiles() {
   await renderAllDiffs();
   renderFileList(); // re-render with accurate badge counts after injection
   overlay.classList.remove('active');
+}
+
+// Sort files in tree order: directories before files at each level, alphabetical within each group
+function sortFilesTreeOrder(files) {
+  files.sort((a, b) => {
+    const ap = a.file.split('/'), bp = b.file.split('/');
+    const len = Math.min(ap.length, bp.length);
+    for (let i = 0; i < len; i++) {
+      const aLast = i === ap.length - 1, bLast = i === bp.length - 1;
+      if (aLast && !bLast) return 1;
+      if (!aLast && bLast) return -1;
+      const cmp = ap[i].localeCompare(bp[i]);
+      if (cmp !== 0) return cmp;
+    }
+    return ap.length - bp.length;
+  });
 }
 
 function commentCountForFile(file) {
