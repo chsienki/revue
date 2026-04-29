@@ -22,6 +22,21 @@ public static class GitHelper
         return stdout;
     }
 
+    /// <summary>
+    /// Returns the current branch name, or null if HEAD is detached (or git fails).
+    /// </summary>
+    public static string? GetCurrentBranch(string repoRoot)
+    {
+        try
+        {
+            var name = RunGit(["rev-parse", "--abbrev-ref", "HEAD"], repoRoot).Trim();
+            // Detached HEAD reports literal "HEAD" — treat as no branch
+            if (string.IsNullOrEmpty(name) || name == "HEAD") return null;
+            return name;
+        }
+        catch { return null; }
+    }
+
     public static string ResolveDefaultBase(string repoRoot)
     {
         foreach (var r in new[] { "upstream/main", "origin/main", "main" })

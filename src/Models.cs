@@ -19,7 +19,8 @@ public record Comment(
     string Author,
     string Created,
     bool Resolved,
-    List<Reply>? Replies
+    List<Reply>? Replies,
+    string? Branch = null
 );
 
 public record CommentRequest(
@@ -32,7 +33,8 @@ public record CommentRequest(
     string Side,
     string Body,
     string? Author,
-    bool Resolved
+    bool Resolved,
+    string? Branch = null
 );
 
 public record ReplyRequest(

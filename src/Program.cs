@@ -122,7 +122,12 @@ app.MapGet("/api/config", () => Results.Json(new
     commitHash,
     latestVersion,
     updateCommand,
+    currentBranch = GitHelper.GetCurrentBranch(repoRoot),
 }, jsonOpts));
+
+// GET /api/current-branch — lightweight endpoint for polling branch changes
+app.MapGet("/api/current-branch", () =>
+    Results.Json(new { currentBranch = GitHelper.GetCurrentBranch(repoRoot) }, jsonOpts));
 
 // GET /api/branches
 app.MapGet("/api/branches", () =>
@@ -305,7 +310,10 @@ app.MapPost("/api/comments", async (HttpRequest req) =>
         Author: cr.Author ?? "user",
         Created: DateTime.UtcNow.ToString("o"),
         Resolved: cr.Resolved,
-        Replies: []
+        Replies: [],
+        // Capture the current git branch so we can filter comments per-branch.
+        // null when detached HEAD or git fails — such comments show on all branches.
+        Branch: GitHelper.GetCurrentBranch(repoRoot)
     );
     comments.Add(comment);
     CommentsStore.Save(repoRoot, comments);

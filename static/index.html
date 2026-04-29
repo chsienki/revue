@@ -617,6 +617,8 @@
   .show-resolved-wrap input { cursor: pointer; }
   .delete-resolved-btn { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 0.6875rem; text-decoration: underline; padding: 0; margin-left: auto; }
   .delete-resolved-btn:hover { color: var(--del-text, #f47174); }
+  .other-branches-count { margin-left: auto; font-size: 0.6875rem; color: var(--text-dim); font-style: italic; }
+  .revue-branch-badge { display: inline-block; padding: 1px 7px; margin-left: 6px; font-size: 0.6875rem; font-weight: 500; color: var(--accent); background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; vertical-align: baseline; }
   .orphaned-file-item { border-top: 1px solid var(--border); margin-top: 4px; font-style: italic; }
   .orphaned-wrapper { border: 1px solid var(--border); border-radius: var(--radius); margin-top: 8px; }
   .orphaned-comments-list { padding: 8px 0; }
@@ -666,6 +668,10 @@
           <option value="line-by-line">Inline</option>
         </select>
       </div>
+      <div class="settings-item">
+        <input type="checkbox" id="setting-all-branches" />
+        <label for="setting-all-branches">Show comments from all branches</label>
+      </div>
       <div class="settings-item settings-version" id="version-label"></div>
     </div>
   </div>
@@ -700,6 +706,11 @@
       <label for="show-resolved">Show resolved</label>
       <button class="delete-resolved-btn" id="delete-resolved">Delete resolved</button>
     </div>
+    <div class="show-resolved-wrap" id="other-branches-wrap" style="display:none">
+      <input type="checkbox" id="show-all-branches" />
+      <label for="show-all-branches">Show all branches</label>
+      <span id="other-branches-count" class="other-branches-count"></span>
+    </div>
     <div id="filelist-resize"></div>
   </div>
   <div id="diffview">
@@ -722,6 +733,8 @@ let state = {
   ignoreWhitespace: false,
   diffLayout: 'side-by-side',
   fileContext: {},  // file -> context line count (default 5)
+  currentBranch: null,    // git branch we're checked out on (null = detached HEAD)
+  showAllBranches: false, // when true, show comments from all branches
 };
 
 // ── Utilities ──────────────────────────────────────────────────────────────
@@ -737,6 +750,7 @@ state.ignoreWhitespace = loadPref('ignoreWhitespace', 'false') === 'true';
 state.diffLayout = loadPref('diffLayout', 'side-by-side');
 state.showResolved = loadPref('showResolved', 'true') === 'true';
 state.theme = loadPref('theme', 'auto');
+state.showAllBranches = loadPref('showAllBranches', 'false') === 'true';
 state.wrappedFiles = new Set(loadPref('wrappedFiles', '').split('\n').filter(Boolean));
 function saveWrappedFiles() { savePref('wrappedFiles', [...state.wrappedFiles].join('\n')); }
 
@@ -781,6 +795,33 @@ async function apiDelete(path) {
 async function reloadComments() {
   state.comments = await api('/api/comments');
   if (window.resetCommentsBaseline) window.resetCommentsBaseline();
+  updateOtherBranchesUI();
+}
+
+// Comment is visible (branch-wise) when:
+//   - the user opted to show all branches
+//   - we don't know the current branch (detached HEAD)
+//   - the comment has no branch (legacy / created in detached HEAD state)
+//   - the comment's branch matches the current branch
+function branchVisible(c) {
+  if (state.showAllBranches) return true;
+  if (!state.currentBranch) return true;
+  if (!c.branch) return true;
+  return c.branch === state.currentBranch;
+}
+
+// Show a count + the toggle row whenever there are comments hidden by the branch filter.
+function updateOtherBranchesUI() {
+  const wrap = document.getElementById('other-branches-wrap');
+  const countEl = document.getElementById('other-branches-count');
+  if (!wrap || !countEl) return;
+  const cb = document.getElementById('show-all-branches');
+  if (cb) cb.checked = state.showAllBranches;
+  if (!state.currentBranch) { wrap.style.display = 'none'; return; }
+  const otherCount = state.comments.filter(c => c.branch && c.branch !== state.currentBranch).length;
+  if (otherCount === 0 && !state.showAllBranches) { wrap.style.display = 'none'; return; }
+  wrap.style.display = '';
+  countEl.textContent = otherCount > 0 ? `${otherCount} on other branches` : '';
 }
 
 // ── Stale ref detection ───────────────────────────────────────────────────
@@ -828,6 +869,7 @@ async function init() {
   state.head = 'HEAD';
   state.logBase = state.base;
   state.logHead = state.head;
+  state.currentBranch = cfg.currentBranch || null;
 
   if (cfg.version) {
     const hash = cfg.commitHash ? ` (${cfg.commitHash})` : '';
@@ -866,6 +908,19 @@ async function init() {
     renderAllDiffs();
   });
 
+  // Branch filter — both the inline filelist toggle and the settings panel toggle stay in sync.
+  function applyBranchFilterChange(checked) {
+    state.showAllBranches = checked;
+    savePref('showAllBranches', state.showAllBranches);
+    document.getElementById('show-all-branches').checked = checked;
+    document.getElementById('setting-all-branches').checked = checked;
+    updateOtherBranchesUI();
+    renderFileList();
+    renderAllDiffs();
+  }
+  document.getElementById('show-all-branches').addEventListener('change', e => applyBranchFilterChange(e.target.checked));
+  document.getElementById('setting-all-branches').addEventListener('change', e => applyBranchFilterChange(e.target.checked));
+
   document.getElementById('delete-resolved').addEventListener('click', async () => {
     const resolved = state.comments.filter(c => c.resolved);
     if (!resolved.length) return;
@@ -890,6 +945,9 @@ async function init() {
   layoutSel.value = state.diffLayout;
   themeSel.value = state.theme;
   document.getElementById('show-resolved').checked = state.showResolved;
+  document.getElementById('show-all-branches').checked = state.showAllBranches;
+  document.getElementById('setting-all-branches').checked = state.showAllBranches;
+  updateOtherBranchesUI();
 
   wsCheck.addEventListener('change', () => {
     state.ignoreWhitespace = wsCheck.checked;
@@ -963,6 +1021,17 @@ function setupFilelistResize() {
 
   async function poll() {
     try {
+      // Check for current-branch changes (e.g. user ran `git checkout` in another terminal)
+      let branchChanged = false;
+      try {
+        const cb = await api('/api/current-branch');
+        const newBranch = cb.currentBranch || null;
+        if (newBranch !== state.currentBranch) {
+          state.currentBranch = newBranch;
+          branchChanged = true;
+        }
+      } catch { /* ignore */ }
+
       // Check for comment changes (new replies, new comments)
       const comments = await api('/api/comments');
       const commentsJson = JSON.stringify(comments);
@@ -972,16 +1041,26 @@ function setupFilelistResize() {
       // If comments changed, update state silently so next render picks them up
       if (commentsChanged) state.comments = comments;
 
+      // If branch changed, re-render to apply the new branch filter (and refresh the visible-count UI)
+      if (branchChanged) {
+        updateOtherBranchesUI();
+        renderFileList();
+        renderAllDiffs();
+      } else if (commentsChanged) {
+        updateOtherBranchesUI();
+      }
+
       // Check for file/diff changes
       const { hash } = await api(`/api/changes-hash?base=${encodeURIComponent(state.base)}&head=${encodeURIComponent(state.head)}`);
       const diffChanged = lastDiffHash !== null && hash !== lastDiffHash;
       lastDiffHash = hash;
 
       // Show banner if something changed
-      if (!dismissed && (commentsChanged || diffChanged)) {
+      if (!dismissed && (commentsChanged || diffChanged || branchChanged)) {
         const parts = [];
         if (diffChanged) parts.push('Files changed on disk');
         if (commentsChanged) parts.push('New comment activity');
+        if (branchChanged) parts.push(`Branch changed to "${state.currentBranch || 'detached HEAD'}"`);
         msg.textContent = parts.join(' · ');
         banner.classList.add('active');
       }
@@ -1037,7 +1116,7 @@ function sortFilesTreeOrder(files) {
 
 function commentCountForFile(file) {
   const ids = state._injectedIds;
-  return state.comments.filter(c => c.file === file && (state.showResolved || !c.resolved) && (!ids || ids.has(c.id))).length;
+  return state.comments.filter(c => c.file === file && (state.showResolved || !c.resolved) && branchVisible(c) && (!ids || ids.has(c.id))).length;
 }
 
 function renderFileList() {
@@ -1136,7 +1215,7 @@ function renderFileList() {
 
   // Show orphaned comment count in file tree as a virtual entry
   const ids = state._injectedIds;
-  const orphanedForTree = state.comments.filter(c => (state.showResolved || !c.resolved) && (!ids || !ids.has(c.id)));
+  const orphanedForTree = state.comments.filter(c => (state.showResolved || !c.resolved) && branchVisible(c) && (!ids || !ids.has(c.id)));
   if (orphanedForTree.length) {
     const div = document.createElement('div');
     div.className = 'file-item orphaned-file-item' + (state.currentFile === '__orphaned__' ? ' active' : '');
@@ -1233,7 +1312,7 @@ async function renderAllDiffs() {
   state._injectedIds = injectedIds;
 
   // Orphaned = comments on files not in diff OR comments on diff files but not on visible lines
-  const visibleComments = state.comments.filter(c => (state.showResolved || !c.resolved));
+  const visibleComments = state.comments.filter(c => (state.showResolved || !c.resolved) && branchVisible(c));
   const orphaned = visibleComments.filter(c => !injectedIds.has(c.id));
   if (orphaned.length) {
     const section = document.createElement('div');
@@ -1257,8 +1336,10 @@ async function renderAllDiffs() {
       html += `<div class="orphaned-file-group">
         <div class="orphaned-file-header">${escHtml(file)}</div>`;
       comments.forEach(c => {
+        const showBadge = c.branch && c.branch !== state.currentBranch;
+        const branchBadge = showBadge ? ` <span class="revue-branch-badge" title="Created on branch ${escHtml(c.branch)}">${escHtml(c.branch)}</span>` : '';
         html += `<div class="revue-comment-item${c.resolved ? ' resolved' : ''}" data-orphan-id="${c.id}" style="margin:4px 12px">
-          <div class="revue-comment-body">${escHtml(c.body)}</div>
+          <div class="revue-comment-body">${escHtml(c.body)}${branchBadge}</div>
           <div class="revue-comment-meta">
             <span>Line ${c.line}</span>
             <span>${new Date(c.created).toLocaleString()}</span>
@@ -1369,6 +1450,7 @@ function injectComments(file, patch, container) {
   state.comments
     .filter(c => c.file === file)
     .filter(c => state.showResolved || !c.resolved)
+    .filter(c => branchVisible(c))
     .forEach(c => {
       const lineMap = c.side === 'left' ? oldLineMap : newLineMap;
       const relocated = relocateComment(c, lineMap);
@@ -1473,8 +1555,12 @@ function renderCommentItem(container, c, file) {
 
   const authorLabel = c.author === 'copilot' ? '🤖 Copilot' : `👤 ${c.author || 'user'}`;
   const driftLabel = c._drifted ? ` <span style="color:var(--text-dim);font-style:italic" title="Content moved from original line ${c.line}">↕ moved from line ${c.line}</span>` : '';
+  // Show a branch badge whenever a comment was made on a branch other than the one we're on now —
+  // that way "show all branches" mode (and any rare case where stale comments sneak through) is obvious.
+  const showBadge = c.branch && c.branch !== state.currentBranch;
+  const branchBadge = showBadge ? ` <span class="revue-branch-badge" title="Created on branch ${escHtml(c.branch)}">${escHtml(c.branch)}</span>` : '';
   div.innerHTML = `
-    <div class="revue-comment-author">${escHtml(authorLabel)}</div>
+    <div class="revue-comment-author">${escHtml(authorLabel)}${branchBadge}</div>
     <div class="revue-comment-body">${escHtml(c.body)}</div>
     <div class="revue-comment-meta">
       <span>Line ${c._displayLine || c.line}${driftLabel}</span>

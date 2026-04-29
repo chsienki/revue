@@ -77,16 +77,19 @@ Start the revue server for the **current repository** so the user can review dif
 
 ### What To Do
 
-1. Read `.revue/comments.json` from the current repository root
-2. For each **unresolved** comment (`"resolved": false`), show:
+1. **Determine the current git branch** by running `git rev-parse --abbrev-ref HEAD` in the repo. Comments are tagged with the branch they were created on; you should ignore comments from other branches.
+2. Read `.revue/comments.json` from the current repository root
+3. For each **unresolved** comment (`"resolved": false`) **whose `branch` field matches the current branch (or is missing — legacy comments)**, show:
    - The **file path** and **line content** (the actual code the comment targets)
    - The **comment body** (what the developer wrote)
-3. Respond to each comment as a thoughtful code reviewer would:
+4. Respond to each comment as a thoughtful code reviewer would:
    - If it's a question → answer it
    - If it's a concern → address it with suggestions or an explanation
    - If it's a TODO → acknowledge and propose concrete next steps
    - If it's pointing out a bug → explain the issue and suggest a fix
-4. After addressing all comments, offer a brief summary
+5. After addressing all comments, offer a brief summary
+
+If you notice comments tagged with a different branch, mention them briefly so the user knows they exist (e.g. "I noticed 3 comments from branch `feature-x` — not addressing those since you're on `main`. Switch to that branch if you want me to look at them.") but don't act on them.
 
 ### Locating Comments in Code (Important!)
 
@@ -109,6 +112,7 @@ The comments file is at `.revue/comments.json` (relative to git repo root). Each
   "base": "upstream/main",
   "head": "HEAD",
   "side": "right",
+  "branch": "feature/null-checks",
   "body": "Should this ever return null? Seems risky.",
   "author": "user",
   "created": "2024-01-15T10:30:00+00:00",
@@ -123,6 +127,8 @@ The comments file is at `.revue/comments.json` (relative to git repo root). Each
   ]
 }
 ```
+
+The `branch` field captures the git branch the user was checked out on when they wrote the comment. It may be missing for legacy comments or comments authored in a detached-HEAD state — treat missing as "applies to all branches".
 
 ### Replying to Comments
 
@@ -146,6 +152,7 @@ After posting all replies, tell the user to check the revue UI for your response
 ## Notes
 
 - Only address **unresolved** comments unless the user asks for resolved ones too
+- **Filter to the current branch**: only consider comments whose `branch` matches the current git branch (`git rev-parse --abbrev-ref HEAD`), or has no `branch` field. Comments from other branches are stale review artifacts left over from when the user was checked out elsewhere.
 - The `.revue/` directory is gitignored — comments are local only
 - Comments are tied to a specific `base`/`head` diff range; mention this context when relevant
 - When replying, always use `author: "copilot"` so the UI distinguishes user vs Copilot comments

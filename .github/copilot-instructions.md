@@ -79,6 +79,8 @@ install.cs                # Local dev build + install as Copilot CLI plugin
 - Comments have an `author` field (`"user"` for humans, `"copilot"` for Copilot)
 - Comments support threaded `replies` — each reply has `id`, `author`, `body`, `created`
 - Comments are side-aware: stored with `side: "left"` (old) or `"right"` (new) and only rendered on the matching panel
+- Comments are **branch-aware**: stored with `branch` set to `git rev-parse --abbrev-ref HEAD` at creation time. The UI hides comments from other branches by default (since `.revue/comments.json` is local-only and survives branch switches). A "Show all branches" toggle in the filelist footer / settings panel reveals them with a branch badge. Legacy comments without a `branch` field are always shown.
+- The current branch is exposed via `/api/config` (initial load) and `/api/current-branch` (polled every 5s) so live `git checkout` in another terminal updates the filter automatically.
 - In SxS mode, inserting a comment row on one side also inserts a spacer row on the opposite side, with a `ResizeObserver` to keep heights in sync
 - `renderAllDiffs()` saves/restores `#diffview` scroll position so comment actions don't jump to top
 - "Orphaned comments" (on files not in current diff) render as a virtual "Other comments" file at the end of the diff view
@@ -89,8 +91,9 @@ install.cs                # Local dev build + install as Copilot CLI plugin
 - `state.logBase`/`state.logHead` track branch selector values (used for the git log query)
 - `state.base`/`state.head` track the actual diff range (modified by commit selection)
 - `state.rangeStart`/`state.rangeEnd` track commit range selection
+- `state.currentBranch` is the live git branch (or `null` when detached HEAD); `state.showAllBranches` toggles the branch filter
 - Branch selector changes reset both log and diff state plus the range
-- User preferences (`ignoreWhitespace`, `diffLayout`, `showResolved`, `theme`) are persisted as cookies via `savePref()`/`loadPref()`
+- User preferences (`ignoreWhitespace`, `diffLayout`, `showResolved`, `theme`, `showAllBranches`) are persisted as cookies via `savePref()`/`loadPref()`
 
 ## Comment schema (JSON)
 
@@ -103,6 +106,7 @@ install.cs                # Local dev build + install as Copilot CLI plugin
   "base": "upstream/main",
   "head": "HEAD",
   "side": "right",
+  "branch": "feature/foo",
   "body": "Why is this needed?",
   "author": "user",
   "created": "2026-04-02T00:00:00Z",
@@ -122,7 +126,8 @@ install.cs                # Local dev build + install as Copilot CLI plugin
 
 All return JSON (camelCase). Errors return `Results.Problem(...)`.
 
-- `GET /api/config` → `{ defaultBase, repoRoot }`
+- `GET /api/config` → `{ defaultBase, repoRoot, version, commitHash, latestVersion, updateCommand, currentBranch }`
+- `GET /api/current-branch` → `{ currentBranch }` (cheap, polled to detect `git checkout`)
 - `GET /api/branches` → `string[]`
 - `GET /api/log?base=X&head=Y` → `[{ hash, message }]`
 - `GET /api/diff?base=X&head=Y&ignoreWhitespace=bool` → `DiffFile[]` (includes untracked files when head=HEAD)
