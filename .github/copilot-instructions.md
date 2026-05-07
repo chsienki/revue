@@ -263,3 +263,11 @@ This gives the user a fully normal Edge window (movable, resizable, F12 DevTools
 - Don't put the loading overlay inside `#diffview-content` — it gets cleared by `innerHTML`
 - Don't put `overflow: hidden` on `.d2h-diff-table` — it breaks sticky line numbers
 - Don't modify `.gitignore` — use `.git/info/exclude` for local ignores
+
+## Ideas backlog
+
+<!-- Mirrored from copilot-context/ideas/inbox.md. Newest at the bottom. -->
+
+- 2026-05-06: Diffs should match filelist
+- 2026-05-06: Cap open diffs at ~15 with sliding window for massive PRs
+- 2026-05-06: Single instance targeting multiple directories -- selector + directory/repo name
