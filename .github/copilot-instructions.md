@@ -270,4 +270,3 @@ This gives the user a fully normal Edge window (movable, resizable, F12 DevTools
 
 - 2026-05-06: Diffs should match filelist
 - 2026-05-06: Single instance targeting multiple directories -- selector + directory/repo name
-- 2026-05-13: Handle big PRs gracefully with a sliding window over diffs -- load X files at a time, 'load more' at the bottom and 'load previous' at the top, clicking a file in the tree jumps the window to that file. Consider making more/less show one more diff at a time so you can naturally scroll through them.

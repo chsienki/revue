@@ -397,6 +397,31 @@
   }
   #diffview > *:not(#loading-overlay) { margin: 0; }
   #diffview-content > * { margin: 12px; }
+  .window-control {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 10px 12px;
+    border: 1px dashed var(--border);
+    border-radius: var(--radius);
+    color: var(--text-dim);
+    font-size: 0.8125rem;
+    background: var(--bg2);
+  }
+  .window-control button {
+    font: inherit;
+    font-family: inherit;
+    line-height: normal;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 4px 10px;
+    cursor: pointer;
+  }
+  .window-control button:hover { border-color: var(--accent); color: var(--accent); }
+  .window-control .window-count { font-family: var(--mono); font-size: 0.75rem; }
   #diffview-placeholder {
     display: flex;
     align-items: center;
@@ -672,6 +697,10 @@
         <input type="checkbox" id="setting-all-branches" />
         <label for="setting-all-branches">Show comments from all branches</label>
       </div>
+      <div class="settings-item">
+        <label for="setting-window-size" title="0 to render all files at once">Files rendered at once</label>
+        <input type="number" id="setting-window-size" min="0" max="500" step="1" style="width: 4.5rem" title="0 to render all files at once" />
+      </div>
       <div class="settings-item settings-version" id="version-label"></div>
     </div>
   </div>
@@ -735,6 +764,8 @@ let state = {
   fileContext: {},  // file -> context line count (default 5)
   currentBranch: null,    // git branch we're checked out on (null = detached HEAD)
   showAllBranches: false, // when true, show comments from all branches
+  windowSize: 10,         // max files mounted at once (0 = render all)
+  windowStart: 0,         // index into state.files for first rendered file
 };
 
 // ── Utilities ──────────────────────────────────────────────────────────────
@@ -752,6 +783,8 @@ state.showResolved = loadPref('showResolved', 'true') === 'true';
 state.theme = loadPref('theme', 'auto');
 state.showAllBranches = loadPref('showAllBranches', 'false') === 'true';
 state.wrappedFiles = new Set(loadPref('wrappedFiles', '').split('\n').filter(Boolean));
+const _ws = parseInt(loadPref('windowSize', '10'), 10);
+state.windowSize = Number.isFinite(_ws) && _ws >= 0 ? _ws : 10;
 function saveWrappedFiles() { savePref('wrappedFiles', [...state.wrappedFiles].join('\n')); }
 
 function applyTheme(theme) {
@@ -966,6 +999,17 @@ async function init() {
     renderAllDiffs();
   });
 
+  const windowSizeInput = document.getElementById('setting-window-size');
+  windowSizeInput.value = state.windowSize;
+  windowSizeInput.addEventListener('change', () => {
+    const v = parseInt(windowSizeInput.value, 10);
+    state.windowSize = Number.isFinite(v) && v >= 0 ? v : 0;
+    windowSizeInput.value = state.windowSize;
+    savePref('windowSize', state.windowSize);
+    state.windowStart = 0;
+    renderAllDiffs();
+  });
+
   await loadFiles();
   setupCommitsPanel();
   setupFilelistResize();
@@ -1078,6 +1122,7 @@ async function loadFiles() {
   const overlay = document.getElementById('loading-overlay');
   overlay.classList.add('active');
   state.fileContext = {};
+  state.windowStart = 0;
   // Check if base ref is stale (non-blocking, runs in parallel)
   checkBaseRefStatus();
   // Yield to let the browser paint the overlay before heavy work
@@ -1115,8 +1160,43 @@ function sortFilesTreeOrder(files) {
 }
 
 function commentCountForFile(file) {
-  const ids = state._injectedIds;
+  const ids = state._globallyInjectableIds;
   return state.comments.filter(c => c.file === file && (state.showResolved || !c.resolved) && branchVisible(c) && (!ids || ids.has(c.id))).length;
+}
+
+// Precompute which comment IDs would be injectable across the entire diff
+// (not just the current window). Used for file-list badges and the orphaned
+// section so out-of-window files still report real comment counts.
+function computeGloballyInjectableIds() {
+  const ids = new Set();
+  if (!state.files.length || !state.comments.length) return ids;
+  const filesByName = new Map();
+  state.files.forEach(f => filesByName.set(f.file, f));
+  const lineMapCache = new Map();
+  for (const c of state.comments) {
+    const f = filesByName.get(c.file);
+    if (!f || !f.patch) continue;
+    let maps = lineMapCache.get(c.file);
+    if (!maps) {
+      const lines = f.patch.split('\n');
+      maps = { old: buildLineMap(lines, 'old'), new: buildLineMap(lines, 'new') };
+      lineMapCache.set(c.file, maps);
+    }
+    const lineMap = c.side === 'left' ? maps.old : maps.new;
+    const relocated = relocateComment(c, lineMap);
+    if (lineMap[relocated.line] !== undefined) ids.add(c.id);
+  }
+  return ids;
+}
+
+// Window helpers. Window slides over state.files for rendering only.
+function isWindowed() {
+  return state.windowSize > 0 && state.files.length > state.windowSize;
+}
+function getWindowSlice() {
+  if (!isWindowed()) return { start: 0, end: state.files.length };
+  const start = Math.max(0, Math.min(state.windowStart, state.files.length - state.windowSize));
+  return { start, end: Math.min(state.files.length, start + state.windowSize) };
 }
 
 function renderFileList() {
@@ -1192,8 +1272,7 @@ function renderFileList() {
       div.addEventListener('click', () => {
         state.currentFile = f.file;
         renderFileList();
-        const target = document.getElementById(`file-${encodeFileId(f.file)}`);
-        if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        jumpToFile(f.file);
       });
       container.appendChild(div);
     });
@@ -1214,7 +1293,7 @@ function renderFileList() {
   }
 
   // Show orphaned comment count in file tree as a virtual entry
-  const ids = state._injectedIds;
+  const ids = state._globallyInjectableIds;
   const orphanedForTree = state.comments.filter(c => (state.showResolved || !c.resolved) && branchVisible(c) && (!ids || !ids.has(c.id)));
   if (orphanedForTree.length) {
     const div = document.createElement('div');
@@ -1224,8 +1303,17 @@ function renderFileList() {
       <span class="file-name">Other comments</span>
       <span class="comment-badge">${orphanedForTree.length}</span>
     `;
-    div.addEventListener('click', () => {
+    div.addEventListener('click', async () => {
       state.currentFile = '__orphaned__';
+      // Ensure the window includes the end so the orphaned section is mounted
+      if (isWindowed()) {
+        const lastStart = Math.max(0, state.files.length - state.windowSize);
+        if (state.windowStart !== lastStart) {
+          state.windowStart = lastStart;
+          renderFileList();
+          await renderAllDiffs({ skipPin: true });
+        }
+      }
       renderFileList();
       const target = document.getElementById('file-__orphaned__');
       if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1236,9 +1324,60 @@ function renderFileList() {
 
 // ── Diff rendering ─────────────────────────────────────────────────────────
 
-async function renderAllDiffs() {
+// Save a reference to the first file wrapper whose bottom edge is inside the
+// viewport, plus its offset from the viewport top. Returned object can be
+// passed to restoreScrollPin to keep the visual position stable across a
+// re-render that adds or removes file wrappers above the viewport.
+function captureScrollPin() {
   const scrollEl = document.getElementById('diffview');
-  const scrollTop = scrollEl?.scrollTop ?? 0;
+  if (!scrollEl) return null;
+  const containerRect = scrollEl.getBoundingClientRect();
+  const wrappers = scrollEl.querySelectorAll('.d2h-file-wrapper');
+  for (const w of wrappers) {
+    const rect = w.getBoundingClientRect();
+    if (rect.bottom >= containerRect.top) {
+      return { id: w.id, offset: rect.top - containerRect.top, fallbackScrollTop: scrollEl.scrollTop };
+    }
+  }
+  return { id: null, offset: 0, fallbackScrollTop: scrollEl.scrollTop };
+}
+
+function restoreScrollPin(pin) {
+  const scrollEl = document.getElementById('diffview');
+  if (!scrollEl || !pin) return;
+  if (pin.id) {
+    const el = document.getElementById(pin.id);
+    if (el) {
+      const containerRect = scrollEl.getBoundingClientRect();
+      const currentOffset = el.getBoundingClientRect().top - containerRect.top;
+      scrollEl.scrollTop += currentOffset - pin.offset;
+      return;
+    }
+  }
+  scrollEl.scrollTop = pin.fallbackScrollTop;
+}
+
+// Make `file` visible in the diff view. If it's outside the current render
+// window, slide the window so the file becomes the first rendered file, then
+// scroll to it.
+async function jumpToFile(file) {
+  const idx = state.files.findIndex(f => f.file === file);
+  if (idx < 0) return;
+  const { start, end } = getWindowSlice();
+  if (idx < start || idx >= end) {
+    state.windowStart = idx;
+    renderFileList();
+    await renderAllDiffs({ skipPin: true });
+  }
+  const target = document.getElementById(`file-${encodeFileId(file)}`);
+  if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+async function renderAllDiffs(opts) {
+  const skipPin = opts && opts.skipPin;
+  const scrollEl = document.getElementById('diffview');
+  const pin = skipPin ? null : captureScrollPin();
+  const fallbackScrollTop = scrollEl?.scrollTop ?? 0;
 
   // Save any open comment input boxes before re-rendering
   const openInputs = [];
@@ -1253,25 +1392,41 @@ async function renderAllDiffs() {
     }
   });
 
+  state._globallyInjectableIds = computeGloballyInjectableIds();
+
   const dv = document.getElementById('diffview-content');
   if (!state.files.length) {
     dv.innerHTML = '<div id="diffview-placeholder">No changes</div>';
     return;
   }
 
+  const { start, end } = getWindowSlice();
+  const windowed = isWindowed();
+  const windowFiles = state.files.slice(start, end);
+
   dv.innerHTML = '<div id="d2h-target"></div>';
   const target = document.getElementById('d2h-target');
   const isSxS = state.diffLayout === 'side-by-side';
 
+  // Top control row -- previous files (only when windowed and not at start)
+  if (windowed && start > 0) {
+    target.appendChild(makeWindowControl('top', start, state.files.length - end));
+  }
+
+  // Inner container that holds the actual diffs (separate from controls so
+  // wrapper indexing matches the windowed slice exactly).
+  const diffsHost = document.createElement('div');
+  target.appendChild(diffsHost);
+
   if (isSxS) {
     // Per-file rendering: use inline for pure adds/deletes, SxS for modifications
-    for (const f of state.files) {
+    for (const f of windowFiles) {
       if (!f.patch) continue;
       const isAddOnly = f.deletions === 0;
       const isDeleteOnly = f.additions === 0;
       const format = (isAddOnly || isDeleteOnly) ? 'line-by-line' : 'side-by-side';
       const fileTarget = document.createElement('div');
-      target.appendChild(fileTarget);
+      diffsHost.appendChild(fileTarget);
       const ui = new Diff2HtmlUI(fileTarget, f.patch, {
         drawFileList: false,
         matching: 'lines',
@@ -1283,9 +1438,9 @@ async function renderAllDiffs() {
       await ui.draw();
     }
   } else {
-    // Inline: render all files together
-    const fullDiff = state.files.map(f => f.patch).filter(Boolean).join('\n');
-    const ui = new Diff2HtmlUI(target, fullDiff, {
+    // Inline: render windowed files together
+    const fullDiff = windowFiles.map(f => f.patch).filter(Boolean).join('\n');
+    const ui = new Diff2HtmlUI(diffsHost, fullDiff, {
       drawFileList: false,
       matching: 'lines',
       outputFormat: 'line-by-line',
@@ -1296,10 +1451,11 @@ async function renderAllDiffs() {
     await ui.draw();
   }
 
-  // Add anchor IDs to each file wrapper and attach per-file handlers
-  const fileWrappers = target.querySelectorAll('.d2h-file-wrapper');
+  // Add anchor IDs to each file wrapper and attach per-file handlers.
+  // Wrapper indices map 1:1 onto windowFiles, not state.files.
+  const fileWrappers = diffsHost.querySelectorAll('.d2h-file-wrapper');
   const injectedIds = new Set();
-  state.files.forEach((f, i) => {
+  windowFiles.forEach((f, i) => {
     if (i >= fileWrappers.length) return;
     fileWrappers[i].id = `file-${encodeFileId(f.file)}`;
     if (state.wrappedFiles.has(f.file)) fileWrappers[i].classList.add('revue-wrap');
@@ -1311,10 +1467,17 @@ async function renderAllDiffs() {
   });
   state._injectedIds = injectedIds;
 
-  // Orphaned = comments on files not in diff OR comments on diff files but not on visible lines
+  // Orphaned set is computed against the global injectable set so files that
+  // are merely out-of-window aren't flagged as orphaned.
+  const globalIds = state._globallyInjectableIds;
   const visibleComments = state.comments.filter(c => (state.showResolved || !c.resolved) && branchVisible(c));
-  const orphaned = visibleComments.filter(c => !injectedIds.has(c.id));
-  if (orphaned.length) {
+  const orphaned = visibleComments.filter(c => !globalIds.has(c.id));
+
+  // The orphaned section only mounts when the window includes the end of the
+  // file list (so it stays at the very bottom of the diff view rather than
+  // jumping around as the user slides).
+  const atEnd = end === state.files.length;
+  if (orphaned.length && atEnd) {
     const section = document.createElement('div');
     section.className = 'd2h-file-wrapper orphaned-wrapper';
     section.id = 'file-__orphaned__';
@@ -1382,6 +1545,11 @@ async function renderAllDiffs() {
     target.appendChild(section);
   }
 
+  // Bottom control row -- next files (only when windowed and not at end)
+  if (windowed && !atEnd) {
+    target.appendChild(makeWindowControl('bottom', start, state.files.length - end));
+  }
+
   // Restore any open comment input boxes
   openInputs.forEach(inp => {
     // Find the matching line number cell in the re-rendered DOM
@@ -1410,7 +1578,39 @@ async function renderAllDiffs() {
     }
   });
 
-  if (scrollEl) scrollEl.scrollTop = scrollTop;
+  if (skipPin) {
+    if (scrollEl) scrollEl.scrollTop = fallbackScrollTop;
+  } else {
+    restoreScrollPin(pin);
+  }
+}
+
+function makeWindowControl(position, start, remainingAfter) {
+  const row = document.createElement('div');
+  row.className = 'window-control';
+  const isTop = position === 'top';
+  const count = isTop ? start : remainingAfter;
+  const label = isTop ? 'previous' : 'next';
+  row.innerHTML = `
+    <button class="window-btn-one">Load ${isTop ? 'previous' : 'more'}</button>
+    <span class="window-count">(${count} ${label})</span>
+    <button class="window-btn-jump">Jump to ${isTop ? 'top' : 'end'}</button>
+  `;
+  row.querySelector('.window-btn-one').addEventListener('click', async () => {
+    if (isTop) {
+      state.windowStart = Math.max(0, state.windowStart - 1);
+    } else {
+      state.windowStart = Math.min(state.files.length - state.windowSize, state.windowStart + 1);
+    }
+    renderFileList();
+    await renderAllDiffs();
+  });
+  row.querySelector('.window-btn-jump').addEventListener('click', async () => {
+    state.windowStart = isTop ? 0 : Math.max(0, state.files.length - state.windowSize);
+    renderFileList();
+    await renderAllDiffs({ skipPin: true });
+  });
+  return row;
 }
 
 // ── Comment relocation ────────────────────────────────────────────────────
