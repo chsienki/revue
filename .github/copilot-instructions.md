@@ -74,6 +74,18 @@ install.cs                # Local dev build + install as Copilot CLI plugin
 - **Inline**: All files rendered together in one diff2html call using `line-by-line` format.
 - When rendering per-file in SxS mode, each file gets its own `Diff2HtmlUI` instance.
 
+## Commit messages as virtual diff files
+
+Commit messages flow through **the same pipeline as real file diffs** -- they are not a parallel UI. The backend synthesises a unified-diff patch per commit (one `+` line per message line) and returns it from `/api/diff` ahead of the real files; the frontend then renders, comment-injects, viewed-toggles, and tree-lists them with the same code that handles any other file.
+
+- **Sentinel path.** `GitHelper.CommitFilePrefix = "revue::commit::"`. A commit message's "file" path is `revue::commit::<full-sha>`. Colons are illegal in Windows paths so this never collides with a real file. Frontend uses a single `isCommitFile(file)` predicate to recognise these.
+- **Backend.** `GitHelper.BuildCommitMessageDiffs(base, head, repoRoot)` builds them from `GitHelper.GetCommits(...)` (which parses `git log --format=%H%x1f%s%x1f%an%x1f%aI%x1f%b%x1e` -- ASCII US/RS separators handle multiline bodies unambiguously). `/api/diff` prepends them when `base != head` (working-tree-only views have no commits in the range).
+- **DiffFile shape.** `DiffFile` has an optional `Commit: CommitMeta?` field (hash, subject, author, date). The body lives inside the patch itself, so `CommitMeta` deliberately omits it to keep the wire payload small.
+- **Frontend rendering.** Commit-sentinel files are tagged with the `.revue-commit` class on their `.d2h-file-wrapper` so CSS can suppress noise that doesn't make sense for a message (the `+` line prefix, the `+N -0` stats, the new-file `CHANGED` tag, the `@@ -0,0 +1,N @@` hunk-info row) and bold the subject line. `decorateCommitHeader(meta, wrapper)` runs after `Diff2HtmlUI.draw()` and replaces the `.d2h-file-name` text with `<icon> <short-sha>  <subject>` plus an author/date span.
+- **Expand context.** `attachExpandButtons` is skipped for commit files -- there's no "more context" to fetch from a fixed text.
+- **File tree.** `renderFileList()` partitions `state.files` into `commitFiles` (rendered as a flat list under a `Commits (N)` header at the top) and `regularFiles` (rendered as the existing hierarchical dir tree below). Both use `commentCountForFile()` for badges.
+- **User toggle.** `state.showCommitMessages` (default true, persisted as the `showCommitMessages` cookie, surfaced as the *Show commit messages* checkbox in the settings panel) controls visibility. When off, `loadFiles()` filters commit-sentinel entries out of `state.files` after fetch; any comments on hidden commits then naturally fall into the orphaned `Other comments` section so they're never silently lost.
+
 ## Comment system
 
 - Comments have an `author` field (`"user"` for humans, `"copilot"` for Copilot)
@@ -83,7 +95,16 @@ install.cs                # Local dev build + install as Copilot CLI plugin
 - The current branch is exposed via `/api/config` (initial load) and `/api/current-branch` (polled every 5s) so live `git checkout` in another terminal updates the filter automatically.
 - In SxS mode, inserting a comment row on one side also inserts a spacer row on the opposite side, with a `ResizeObserver` to keep heights in sync
 - `renderAllDiffs()` saves/restores `#diffview` scroll position so comment actions don't jump to top
-- "Orphaned comments" (on files not in current diff) render as a virtual "Other comments" file at the end of the diff view
+- "Orphaned comments" (on files not in current diff) render as a virtual "Other comments" file at the end of the diff view. The orphaned-section header pretty-prints commit-sentinel files as `Commit <short-sha> (not in current range)`.
+- **Commit-message comments** use `file = "revue::commit::<full-sha>"`, `side = "right"`, and `line` indexed into the rendered message (subject = 1, blank separator = 2, body lines = 3+). They are otherwise the same shape as any other comment.
+
+## Viewed (collapse) toggle
+
+The native `<label class="d2h-file-collapse"><input class="d2h-file-collapse-input">Viewed</label>` markup that diff2html embeds in every `.d2h-file-header` is the single "viewed" control for both file diffs and commit messages. We don't add a custom widget:
+
+- CSS forces the native control visible (the CDN-bundled stylesheet starts it `display: none`).
+- `wireViewedCheckbox(file, wrapper)` clones-and-replaces the input to drop any handler diff2html attached via `fileContentToggle()`, restores its checked state from `state.viewedFiles`, and on change adds/removes the `.revue-viewed` class on the wrapper + persists to the `viewedFiles` cookie.
+- The `.revue-viewed` class hides `.d2h-file-diff`, dims the header, and hides the wrap toggle (which would be a dead action while collapsed).
 
 ## Frontend state management
 
@@ -91,9 +112,11 @@ install.cs                # Local dev build + install as Copilot CLI plugin
 - `state.logBase`/`state.logHead` track branch selector values (used for the git log query)
 - `state.base`/`state.head` track the actual diff range (modified by commit selection)
 - `state.rangeStart`/`state.rangeEnd` track commit range selection
+- `state.files` is the **complete** ordered list returned by `/api/diff` -- commit-sentinel files (when `state.showCommitMessages` is true) followed by real files. Treat it as the single source of truth; downstream code (`renderFileList`, `renderAllDiffs`, `computeGloballyInjectableIds`, `commentCountForFile`) handles commits and real files uniformly except where cosmetics differ.
 - `state.currentBranch` is the live git branch (or `null` when detached HEAD); `state.showAllBranches` toggles the branch filter
 - Branch selector changes reset both log and diff state plus the range
-- User preferences (`ignoreWhitespace`, `diffLayout`, `showResolved`, `theme`, `showAllBranches`) are persisted as cookies via `savePref()`/`loadPref()`
+- User preferences (`ignoreWhitespace`, `diffLayout`, `showResolved`, `showCommitMessages`, `theme`, `showAllBranches`) are persisted as cookies via `savePref()`/`loadPref()`
+- Per-wrapper state (`wrappedFiles`, `viewedFiles`) is a `Set` persisted as a newline-separated cookie. Both file paths and commit-message sentinels (`revue::commit::<sha>`) coexist in `viewedFiles`.
 
 ## Comment schema (JSON)
 
@@ -122,6 +145,8 @@ install.cs                # Local dev build + install as Copilot CLI plugin
 }
 ```
 
+For commit-message comments, `file` is the sentinel `revue::commit::<full-sha>`, `side` is always `"right"`, and `line` indexes into the rendered commit message (subject = 1, blank = 2, body lines = 3+).
+
 ## API endpoints
 
 All return JSON (camelCase). Errors return `Results.Problem(...)`.
@@ -129,8 +154,8 @@ All return JSON (camelCase). Errors return `Results.Problem(...)`.
 - `GET /api/config` → `{ defaultBase, repoRoot, version, commitHash, latestVersion, updateCommand, currentBranch }`
 - `GET /api/current-branch` → `{ currentBranch }` (cheap, polled to detect `git checkout`)
 - `GET /api/branches` → `string[]`
-- `GET /api/log?base=X&head=Y` → `[{ hash, message }]`
-- `GET /api/diff?base=X&head=Y&ignoreWhitespace=bool` → `DiffFile[]` (includes untracked files when head=HEAD)
+- `GET /api/log?base=X&head=Y` → `[{ hash, message }]` (short subject only; for the topbar Commits picker)
+- `GET /api/diff?base=X&head=Y&ignoreWhitespace=bool` → `DiffFile[]` (includes untracked files when head=HEAD, **and** a virtual diff per commit message in `base..head` prepended ahead of the real files when `base != head`; each commit entry has its `commit` field populated with `CommitMeta`)
 - `GET /api/file-diff?base=X&head=Y&file=F&ignoreWhitespace=bool` → `DiffFile`
 - `GET /api/comments` → `Comment[]`
 - `POST /api/comments` → accepts `CommentRequest` (include `author`), returns `Comment`
@@ -268,7 +293,5 @@ This gives the user a fully normal Edge window (movable, resizable, F12 DevTools
 
 <!-- Mirrored from copilot-context/ideas/inbox.md. Newest at the bottom. -->
 
-- 2026-05-06: Diffs should match filelist
 - 2026-05-06: Single instance targeting multiple directories -- selector + directory/repo name
 - 2026-06-09: NativeAOT desktop binary that wraps the webapp for fast launch, not tied to the browser (likely requires 'single instance, multi repo' work first)
-- 2026-06-09: show commit messages for the current review set, and allow commenting on them so the user can help the AI write a good message

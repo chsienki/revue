@@ -42,6 +42,12 @@ public record ReplyRequest(
     string Body
 );
 
-public record DiffFile(string File, string Patch, int Additions, int Deletions);
+public record DiffFile(string File, string Patch, int Additions, int Deletions, CommitMeta? Commit = null);
 
 public record RefStatus(string Remote, string Branch, int Behind);
+
+public record CommitInfo(string Hash, string Subject, string Body, string Author, string Date);
+
+// Slim metadata attached to DiffFile when the file represents a commit message.
+// Body is intentionally omitted -- it's already encoded into the patch lines.
+public record CommitMeta(string Hash, string Subject, string Author, string Date);

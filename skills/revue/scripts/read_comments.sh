@@ -51,25 +51,46 @@ fi
 echo ""
 
 # Print unresolved comments for the current branch (or all if detached HEAD)
+# Comments on commit messages have file values like "revue::commit::<sha>" --
+# detect those and label them as commit-message comments so the reviewer knows
+# the target is a git commit message rather than a source file.
 if [ -n "$CURRENT_BRANCH" ]; then
   jq -r --arg b "$CURRENT_BRANCH" '
     .[] | select(.resolved == false) | select((.branch // "") == "" or .branch == $b) |
-    "📍 \(.file):\(.line)\n" +
-    "   Code: \(.lineContent | ltrimstr("    ") | ltrimstr("\t"))\n" +
-    "   Comment: \(.body)\n" +
-    "   Diff: \(.base) → \(.head)\n" +
-    "   ID: \(.id)\n" +
-    "---"
+    if (.file | startswith("revue::commit::")) then
+      "💬 Commit message \(.file | sub("revue::commit::"; "") | .[0:8])  line \(.line)\n" +
+      "   Text: \(.lineContent)\n" +
+      "   Comment: \(.body)\n" +
+      "   Diff: \(.base) → \(.head)\n" +
+      "   ID: \(.id)\n" +
+      "---"
+    else
+      "📍 \(.file):\(.line)\n" +
+      "   Code: \(.lineContent | ltrimstr("    ") | ltrimstr("\t"))\n" +
+      "   Comment: \(.body)\n" +
+      "   Diff: \(.base) → \(.head)\n" +
+      "   ID: \(.id)\n" +
+      "---"
+    end
   ' "$COMMENTS_FILE"
 else
   jq -r '
     .[] | select(.resolved == false) |
-    "📍 \(.file):\(.line)\n" +
-    "   Code: \(.lineContent | ltrimstr("    ") | ltrimstr("\t"))\n" +
-    "   Comment: \(.body)\n" +
-    "   Diff: \(.base) → \(.head)\n" +
-    "   ID: \(.id)\n" +
-    "---"
+    if (.file | startswith("revue::commit::")) then
+      "💬 Commit message \(.file | sub("revue::commit::"; "") | .[0:8])  line \(.line)\n" +
+      "   Text: \(.lineContent)\n" +
+      "   Comment: \(.body)\n" +
+      "   Diff: \(.base) → \(.head)\n" +
+      "   ID: \(.id)\n" +
+      "---"
+    else
+      "📍 \(.file):\(.line)\n" +
+      "   Code: \(.lineContent | ltrimstr("    ") | ltrimstr("\t"))\n" +
+      "   Comment: \(.body)\n" +
+      "   Diff: \(.base) → \(.head)\n" +
+      "   ID: \(.id)\n" +
+      "---"
+    end
   ' "$COMMENTS_FILE"
 fi
 

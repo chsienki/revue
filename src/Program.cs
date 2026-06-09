@@ -225,6 +225,18 @@ app.MapGet("/api/diff", (string? @base, string? head, bool? ignoreWhitespace) =>
             raw = GitHelper.RunGit([.. args], repoRoot);
         }
         var files = GitHelper.ParseDiff(raw);
+        // Prepend a virtual diff file per commit message so commit messages
+        // flow through the same render/comment/viewed pipeline as real files.
+        // Skip when base == head (working-tree-only view: no commits to list).
+        if (!string.Equals(@base, head, StringComparison.Ordinal))
+        {
+            try
+            {
+                var commitDiffs = GitHelper.BuildCommitMessageDiffs(@base, head, repoRoot);
+                files.InsertRange(0, commitDiffs);
+            }
+            catch { /* best-effort; a bad ref shouldn't break the file diff response */ }
+        }
         return Results.Json(files, jsonOpts);
     }
     catch (Exception ex) { return Results.Problem(ex.Message); }

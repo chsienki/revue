@@ -87,9 +87,33 @@ Start the revue server for the **current repository** so the user can review dif
    - If it's a concern → address it with suggestions or an explanation
    - If it's a TODO → acknowledge and propose concrete next steps
    - If it's pointing out a bug → explain the issue and suggest a fix
+   - **If the comment targets a commit message** (see "Commit-message comments" below) → either propose a rewritten commit message and (with permission) run `git commit --amend` / `git rebase -i` to apply it, or reply via the API explaining how to apply the suggested change
 5. After addressing all comments, offer a brief summary
 
 If you notice comments tagged with a different branch, mention them briefly so the user knows they exist (e.g. "I noticed 3 comments from branch `feature-x` — not addressing those since you're on `main`. Switch to that branch if you want me to look at them.") but don't act on them.
+
+### Commit-message comments
+
+Revue lets the user comment directly on the lines of a commit message in the
+review set. These comments are stored with `file` set to a sentinel value
+`revue::commit::<full-sha>` (the colons are illegal in Windows paths so this
+never collides with a real file). The `line` field is the 1-based line number
+within the commit message itself: line 1 is the subject, line 2 is the blank
+separator, lines 3+ are body lines.
+
+When you see such a comment:
+
+1. Run `git show --no-patch --format=%B <sha>` to retrieve the current commit
+   message, and identify the line the user is asking about.
+2. Address the feedback (rewording the subject, clarifying a body paragraph,
+   adding a missing co-author trailer, etc.).
+3. Either:
+   - **Apply the change**, with the user's permission, via `git commit --amend`
+     (for the most-recent commit) or `git rebase -i <sha>^` + `reword` for older
+     commits. After amending, the comment hash will become stale -- post a reply
+     via the API noting the new short SHA so the user can re-fetch in the UI.
+   - **Or just propose** the rewritten message in your reply and let the user
+     run the rebase themselves.
 
 ### Locating Comments in Code (Important!)
 

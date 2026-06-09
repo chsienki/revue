@@ -140,6 +140,74 @@ public static class GitHelper
         RunGit(["fetch", remote, branch], repoRoot);
     }
 
+    /// <summary>
+    /// Returns the commits in the range base..head (newest first), with full
+    /// metadata including the multiline body. Uses ASCII unit/record separators
+    /// (US 0x1f, RS 0x1e) so multiline bodies parse unambiguously.
+    /// </summary>
+    public static List<CommitInfo> GetCommits(string @base, string head, string repoRoot)
+    {
+        var raw = RunGit(["log", "--format=%H%x1f%s%x1f%an%x1f%aI%x1f%b%x1e", $"{@base}..{head}"], repoRoot);
+        var result = new List<CommitInfo>();
+        foreach (var record in raw.Split('\x1e'))
+        {
+            var trimmed = record.Trim('\n');
+            if (trimmed.Length == 0) continue;
+            var parts = trimmed.Split('\x1f', 5);
+            if (parts.Length < 5) continue;
+            result.Add(new CommitInfo(
+                Hash: parts[0],
+                Subject: parts[1],
+                Body: parts[4].TrimEnd('\n'),
+                Author: parts[2],
+                Date: parts[3]));
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Sentinel file-path prefix used to represent a commit message as a virtual
+    /// diff file. Colons are illegal in Windows paths, so this can never collide
+    /// with a real path under review.
+    /// </summary>
+    public const string CommitFilePrefix = "revue::commit::";
+
+    /// <summary>
+    /// Builds a virtual unified-diff file for each commit in base..head whose
+    /// patch body is the commit message itself (one '+' line per message line).
+    /// The frontend renders these through the same diff2html pipeline as real
+    /// files and decorates the header using the attached CommitMeta.
+    /// </summary>
+    public static List<DiffFile> BuildCommitMessageDiffs(string @base, string head, string repoRoot)
+    {
+        var commits = GetCommits(@base, head, repoRoot);
+        var result = new List<DiffFile>(commits.Count);
+        foreach (var c in commits)
+        {
+            var lines = new List<string> { c.Subject };
+            if (!string.IsNullOrEmpty(c.Body))
+            {
+                lines.Add("");
+                lines.AddRange(c.Body.Split('\n'));
+            }
+            var file = CommitFilePrefix + c.Hash;
+            var sb = new System.Text.StringBuilder();
+            sb.Append("diff --git a/").Append(file).Append(" b/").Append(file).Append('\n');
+            sb.Append("new file mode 100644\n");
+            sb.Append("--- /dev/null\n");
+            sb.Append("+++ b/").Append(file).Append('\n');
+            sb.Append("@@ -0,0 +1,").Append(lines.Count).Append(" @@\n");
+            foreach (var line in lines) sb.Append('+').Append(line).Append('\n');
+            result.Add(new DiffFile(
+                File: file,
+                Patch: sb.ToString(),
+                Additions: lines.Count,
+                Deletions: 0,
+                Commit: new CommitMeta(c.Hash, c.Subject, c.Author, c.Date)));
+        }
+        return result;
+    }
+
     public static List<string> GetUntrackedFiles(string repoRoot)
     {
         var output = RunGit(["ls-files", "--others", "--exclude-standard"], repoRoot);

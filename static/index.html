@@ -542,6 +542,25 @@
     cursor: pointer; user-select: none; padding: 0 4px;
   }
   .revue-wrap-toggle input { margin: 0; cursor: pointer; }
+  /* Diff2html's built-in `<label class="d2h-file-collapse"><input>Viewed</label>`
+     ships in every header but starts hidden by default in the CDN bundle. We
+     show it everywhere -- our own change-listener wired in JS handles the
+     collapse + persistence (see wireViewedCheckbox()). */
+  .d2h-file-collapse {
+    display: inline-flex !important; align-items: center; gap: 4px;
+    margin-left: auto; font-size: 0.6875rem; color: var(--text-dim) !important;
+    cursor: pointer; user-select: none; padding: 0 4px;
+    border: none !important; background: none !important;
+  }
+  .d2h-file-collapse + .revue-wrap-toggle { margin-left: 0; }
+  .d2h-file-collapse-input { margin: 0; cursor: pointer; }
+  /* When a wrapper is marked viewed, hide its body and dim the header. The
+     wrap toggle is also hidden to avoid presenting an action that has no
+     visible effect while collapsed. */
+  .d2h-file-wrapper.revue-viewed .d2h-file-diff,
+  .d2h-file-wrapper.revue-viewed .d2h-files-diff { display: none !important; }
+  .d2h-file-wrapper.revue-viewed .d2h-file-header { opacity: 0.55; }
+  .d2h-file-wrapper.revue-viewed .revue-wrap-toggle { visibility: hidden; }
   .d2h-file-header { display: flex !important; align-items: center !important; }
 
   /* Expand context button on hunk headers */
@@ -649,6 +668,85 @@
   .orphaned-comments-list { padding: 8px 0; }
   .orphaned-file-group { margin-bottom: 8px; }
   .orphaned-file-header { font-family: var(--mono); font-size: 0.75rem; color: var(--accent); padding: 4px 12px; font-weight: 600; }
+
+  /* Commit-message wrappers are real diff2html-rendered .d2h-file-wrapper
+     entries whose path starts with the commit sentinel. We just need to (a)
+     suppress noise that doesn't make sense for a message (the `+` line prefix,
+     the +N/-0 stats badge, the new-file tag, the hunk @@ info row), (b)
+     dress up the header with the commit metadata, and (c) bold the subject
+     line so it reads as a title. Everything else -- comments, viewed, wrap,
+     line clicks -- flows through the existing diff pipeline. */
+  .revue-commit .d2h-file-stats { display: none !important; }
+  .revue-commit .d2h-tag { display: none !important; }
+  .revue-commit .d2h-code-line-prefix { display: none !important; }
+  /* Commit messages are all additions so the "old line number" half of the
+     d2h linenumber cell is always empty. It still claims a 2em column via the
+     global min-width rule -- hide it so the actual number sits flush. Then
+     override the flex-cell layout (which is meaningful for diff line-pairs in
+     inline mode but just leaves a giant empty column for a single-number
+     commit cell) back to plain table-cell, and let the visible number own the
+     padding so the whole linenumber column is a click target. */
+  .revue-commit .d2h-code-linenumber .line-num1 { display: none !important; }
+  .revue-commit td.d2h-code-linenumber {
+    display: table-cell !important;
+    padding: 0 !important;
+    min-width: 0 !important;
+    width: auto !important;
+  }
+  .revue-commit .d2h-code-linenumber .line-num2 {
+    display: block !important;
+    text-align: right !important;
+    padding: 2px 6px !important;
+    min-width: 2.5em !important;
+  }
+  /* Hide the synthesised `@@ -0,0 +1,N @@` hunk header -- it adds noise for a
+     commit message. The class lives on the <td>, not the <tr>, so target the
+     wrapping row (always the first body row in a single-hunk add-only diff). */
+  .revue-commit tbody > tr:first-child { display: none !important; }
+  /* With the hunk row hidden, the subject is the next row. Bold it so the
+     title reads distinctly from the body. */
+  .revue-commit tbody > tr:nth-child(2) .d2h-code-line { font-weight: 600; }
+  /* Header decoration injected by decorateCommitHeader() */
+  .revue-commit .d2h-file-name {
+    display: inline-flex !important; align-items: baseline; gap: 8px;
+    font-family: var(--mono); font-size: 0.75rem;
+    overflow: hidden; flex: 1 1 auto; min-width: 0;
+  }
+  .revue-commit .revue-commit-icon { font-size: 0.875rem; line-height: 1; }
+  .revue-commit .revue-commit-hash { color: var(--accent); font-weight: 600; }
+  .revue-commit .revue-commit-subject {
+    color: var(--text); font-weight: 500;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    flex: 1 1 auto; min-width: 0;
+  }
+  .revue-commit .revue-commit-meta {
+    color: var(--text-dim); font-size: 0.6875rem;
+    margin-left: 12px; margin-right: 12px; flex-shrink: 0;
+  }
+  /* "Commits" virtual section in the file tree */
+  .commits-tree-header {
+    padding: 4px 10px; font-size: 0.6875rem; font-weight: 600;
+    color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em;
+    background: var(--bg2); border-bottom: 1px solid var(--border);
+    margin-top: 4px;
+  }
+  .commit-tree-item {
+    display: flex; align-items: center; gap: 6px;
+    padding: 4px 10px 4px 26px;
+    font-size: 0.75rem;
+    cursor: pointer;
+    border-bottom: 1px solid transparent;
+  }
+  .commit-tree-item:hover { background: var(--bg2); }
+  .commit-tree-item.active { background: var(--accent2); }
+  .commit-tree-item .commit-tree-hash {
+    font-family: var(--mono); color: var(--accent); font-size: 0.6875rem; flex-shrink: 0;
+  }
+  .commit-tree-item .commit-tree-subject {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--text); flex: 1 1 auto; min-width: 0;
+  }
+  .commit-tree-item .comment-badge { margin-left: auto; }
 </style>
 </head>
 <body>
@@ -696,6 +794,10 @@
       <div class="settings-item">
         <input type="checkbox" id="setting-all-branches" />
         <label for="setting-all-branches">Show comments from all branches</label>
+      </div>
+      <div class="settings-item">
+        <input type="checkbox" id="setting-show-commits" />
+        <label for="setting-show-commits">Show commit messages</label>
       </div>
       <div class="settings-item">
         <label for="setting-window-size" title="0 to render all files at once">Files rendered at once</label>
@@ -780,12 +882,15 @@ function loadPref(key, fallback) {
 state.ignoreWhitespace = loadPref('ignoreWhitespace', 'false') === 'true';
 state.diffLayout = loadPref('diffLayout', 'side-by-side');
 state.showResolved = loadPref('showResolved', 'true') === 'true';
+state.showCommitMessages = loadPref('showCommitMessages', 'true') === 'true';
 state.theme = loadPref('theme', 'auto');
 state.showAllBranches = loadPref('showAllBranches', 'false') === 'true';
 state.wrappedFiles = new Set(loadPref('wrappedFiles', '').split('\n').filter(Boolean));
+state.viewedFiles = new Set(loadPref('viewedFiles', '').split('\n').filter(Boolean));
 const _ws = parseInt(loadPref('windowSize', '10'), 10);
 state.windowSize = Number.isFinite(_ws) && _ws >= 0 ? _ws : 10;
 function saveWrappedFiles() { savePref('wrappedFiles', [...state.wrappedFiles].join('\n')); }
+function saveViewedFiles() { savePref('viewedFiles', [...state.viewedFiles].join('\n')); }
 
 function applyTheme(theme) {
   const resolved = theme === 'auto'
@@ -980,6 +1085,8 @@ async function init() {
   document.getElementById('show-resolved').checked = state.showResolved;
   document.getElementById('show-all-branches').checked = state.showAllBranches;
   document.getElementById('setting-all-branches').checked = state.showAllBranches;
+  const showCommitsCheck = document.getElementById('setting-show-commits');
+  showCommitsCheck.checked = state.showCommitMessages;
   updateOtherBranchesUI();
 
   wsCheck.addEventListener('change', () => {
@@ -997,6 +1104,12 @@ async function init() {
     savePref('theme', state.theme);
     applyTheme(state.theme);
     renderAllDiffs();
+  });
+  showCommitsCheck.addEventListener('change', () => {
+    state.showCommitMessages = showCommitsCheck.checked;
+    savePref('showCommitMessages', state.showCommitMessages);
+    // Re-fetch so the filter applies before render/badge counting.
+    loadFiles();
   });
 
   const windowSizeInput = document.getElementById('setting-window-size');
@@ -1129,7 +1242,15 @@ async function loadFiles() {
   await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
   await reloadComments();
   try {
-    state.files = await api(`/api/diff?base=${encodeURIComponent(state.base)}&head=${encodeURIComponent(state.head)}&ignoreWhitespace=${state.ignoreWhitespace}`);
+    // /api/diff prepends a virtual diff file per commit message in the range,
+    // so state.files contains both commit-sentinel "files" (path starts with
+    // revue::commit::) and real diff entries. The user can hide commit
+    // messages via the settings panel -- when off we drop them client-side
+    // (any comments on hidden commits fall through to the "Other comments"
+    // orphaned section so they're never silently lost).
+    let files = await api(`/api/diff?base=${encodeURIComponent(state.base)}&head=${encodeURIComponent(state.head)}&ignoreWhitespace=${state.ignoreWhitespace}`);
+    if (!state.showCommitMessages) files = files.filter(f => !isCommitFile(f.file));
+    state.files = files;
     sortFilesTreeOrder(state.files);
   } catch(e) {
     state.files = [];
@@ -1143,9 +1264,19 @@ async function loadFiles() {
   overlay.classList.remove('active');
 }
 
+// Files representing a commit message are flagged by the server with a sentinel
+// path prefix. The colons are illegal in Windows paths so this never collides.
+function isCommitFile(file) { return typeof file === 'string' && file.startsWith('revue::commit::'); }
+
 // Sort files in tree order: directories before files at each level, alphabetical within each group
 function sortFilesTreeOrder(files) {
   files.sort((a, b) => {
+    // Commit-message virtual files always come before real files, and within
+    // the commit block preserve the order the server returned (newest first).
+    const aCommit = isCommitFile(a.file), bCommit = isCommitFile(b.file);
+    if (aCommit && !bCommit) return -1;
+    if (!aCommit && bCommit) return 1;
+    if (aCommit && bCommit) return 0;
     const ap = a.file.split('/'), bp = b.file.split('/');
     const len = Math.min(ap.length, bp.length);
     for (let i = 0; i < len; i++) {
@@ -1204,9 +1335,47 @@ function renderFileList() {
   if (!state.files.length) { el.innerHTML = '<div style="padding:12px;color:var(--text-dim)">No changes</div>'; return; }
   el.innerHTML = '';
 
+  // Partition: commits (cluster at the top under a flat "Commits (N)" header)
+  // vs. real files (hierarchical tree below). Both are first-class DiffFile
+  // entries in state.files; only the rendering shape differs.
+  const commitFiles = state.files.filter(f => isCommitFile(f.file));
+  const regularFiles = state.files.filter(f => !isCommitFile(f.file));
+
+  if (commitFiles.length) {
+    const header = document.createElement('div');
+    header.className = 'commits-tree-header';
+    header.textContent = `Commits (${commitFiles.length})`;
+    el.appendChild(header);
+    commitFiles.forEach(f => {
+      const row = document.createElement('div');
+      row.className = 'commit-tree-item' + (state.currentFile === f.file ? ' active' : '');
+      const subject = f.commit?.subject || '';
+      const hash = f.commit?.hash || '';
+      const cnt = commentCountForFile(f.file);
+      row.innerHTML = `
+        <span class="commit-tree-hash">${escHtml(hash.slice(0, 8))}</span>
+        <span class="commit-tree-subject" title="${escHtml(subject)}">${escHtml(subject)}</span>
+        ${cnt ? `<span class="comment-badge">${cnt}</span>` : ''}
+      `;
+      row.addEventListener('click', () => {
+        state.currentFile = f.file;
+        renderFileList();
+        const target = document.getElementById(`file-${encodeFileId(f.file)}`);
+        if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+      el.appendChild(row);
+    });
+  }
+
+  if (!regularFiles.length) {
+    // Still need to render the orphaned section below if any exist
+    renderOrphanedTreeEntry(el);
+    return;
+  }
+
   // Build tree: { dirs: { name: subtree }, files: [...] }
   const tree = { dirs: {}, files: [] };
-  state.files.forEach(f => {
+  regularFiles.forEach(f => {
     const parts = f.file.split('/');
     let node = tree;
     for (let i = 0; i < parts.length - 1; i++) {
@@ -1293,33 +1462,36 @@ function renderFileList() {
   }
 
   // Show orphaned comment count in file tree as a virtual entry
+  renderOrphanedTreeEntry(el);
+}
+
+function renderOrphanedTreeEntry(el) {
   const ids = state._globallyInjectableIds;
   const orphanedForTree = state.comments.filter(c => (state.showResolved || !c.resolved) && branchVisible(c) && (!ids || !ids.has(c.id)));
-  if (orphanedForTree.length) {
-    const div = document.createElement('div');
-    div.className = 'file-item orphaned-file-item' + (state.currentFile === '__orphaned__' ? ' active' : '');
-    div.style.paddingLeft = '26px';
-    div.innerHTML = `
-      <span class="file-name">Other comments</span>
-      <span class="comment-badge">${orphanedForTree.length}</span>
-    `;
-    div.addEventListener('click', async () => {
-      state.currentFile = '__orphaned__';
-      // Ensure the window includes the end so the orphaned section is mounted
-      if (isWindowed()) {
-        const lastStart = Math.max(0, state.files.length - state.windowSize);
-        if (state.windowStart !== lastStart) {
-          state.windowStart = lastStart;
-          renderFileList();
-          await renderAllDiffs({ skipPin: true });
-        }
+  if (!orphanedForTree.length) return;
+  const div = document.createElement('div');
+  div.className = 'file-item orphaned-file-item' + (state.currentFile === '__orphaned__' ? ' active' : '');
+  div.style.paddingLeft = '26px';
+  div.innerHTML = `
+    <span class="file-name">Other comments</span>
+    <span class="comment-badge">${orphanedForTree.length}</span>
+  `;
+  div.addEventListener('click', async () => {
+    state.currentFile = '__orphaned__';
+    // Ensure the window includes the end so the orphaned section is mounted
+    if (isWindowed()) {
+      const lastStart = Math.max(0, state.files.length - state.windowSize);
+      if (state.windowStart !== lastStart) {
+        state.windowStart = lastStart;
+        renderFileList();
+        await renderAllDiffs({ skipPin: true });
       }
-      renderFileList();
-      const target = document.getElementById('file-__orphaned__');
-      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
-    el.appendChild(div);
-  }
+    }
+    renderFileList();
+    const target = document.getElementById('file-__orphaned__');
+    if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+  el.appendChild(div);
 }
 
 // ── Diff rendering ─────────────────────────────────────────────────────────
@@ -1419,7 +1591,9 @@ async function renderAllDiffs(opts) {
   target.appendChild(diffsHost);
 
   if (isSxS) {
-    // Per-file rendering: use inline for pure adds/deletes, SxS for modifications
+    // Per-file rendering: use inline for pure adds/deletes, SxS for modifications.
+    // Commit messages are synthesised as add-only diffs so they naturally take
+    // the inline path -- there's no "before" side to compare against.
     for (const f of windowFiles) {
       if (!f.patch) continue;
       const isAddOnly = f.deletions === 0;
@@ -1451,19 +1625,30 @@ async function renderAllDiffs(opts) {
     await ui.draw();
   }
 
-  // Add anchor IDs to each file wrapper and attach per-file handlers.
-  // Wrapper indices map 1:1 onto windowFiles, not state.files.
-  const fileWrappers = diffsHost.querySelectorAll('.d2h-file-wrapper');
   const injectedIds = new Set();
+
+  // Add anchor IDs to each file wrapper and attach per-file handlers.
+  // Wrapper indices map 1:1 onto windowFiles, not state.files. Commit-message
+  // wrappers go through the same path -- they're just DiffFile entries whose
+  // path starts with the commit sentinel; decoration / native-Viewed wiring
+  // handle the cosmetic differences after diff2html has done its work.
+  const fileWrappers = diffsHost.querySelectorAll('.d2h-file-wrapper');
   windowFiles.forEach((f, i) => {
     if (i >= fileWrappers.length) return;
-    fileWrappers[i].id = `file-${encodeFileId(f.file)}`;
-    if (state.wrappedFiles.has(f.file)) fileWrappers[i].classList.add('revue-wrap');
-    injectWrapToggle(f.file, fileWrappers[i]);
-    const injected = injectComments(f.file, f.patch, fileWrappers[i]);
+    const wrapper = fileWrappers[i];
+    wrapper.id = `file-${encodeFileId(f.file)}`;
+    const commit = isCommitFile(f.file);
+    if (commit) wrapper.classList.add('revue-commit');
+    if (state.wrappedFiles.has(f.file)) wrapper.classList.add('revue-wrap');
+    if (commit && f.commit) decorateCommitHeader(f.commit, wrapper);
+    injectWrapToggle(f.file, wrapper);
+    wireViewedCheckbox(f.file, wrapper);
+    const injected = injectComments(f.file, f.patch, wrapper);
     injected.forEach(id => injectedIds.add(id));
-    attachLineClickHandlers(f.file, f.patch, fileWrappers[i]);
-    attachExpandButtons(f.file, fileWrappers[i]);
+    attachLineClickHandlers(f.file, f.patch, wrapper);
+    // Commit messages are a complete, fixed text -- there's no "more context"
+    // to fetch, so the expand-context controls would be dead weight.
+    if (!commit) attachExpandButtons(f.file, wrapper);
   });
   state._injectedIds = injectedIds;
 
@@ -1496,8 +1681,11 @@ async function renderAllDiffs(opts) {
     </div><div class="orphaned-comments-list">`;
 
     for (const [file, comments] of Object.entries(byFile).sort((a, b) => a[0].localeCompare(b[0]))) {
+      const headerLabel = isCommitFile(file)
+        ? `Commit ${file.slice('revue::commit::'.length, 'revue::commit::'.length + 8)} (not in current range)`
+        : escHtml(file);
       html += `<div class="orphaned-file-group">
-        <div class="orphaned-file-header">${escHtml(file)}</div>`;
+        <div class="orphaned-file-header">${headerLabel}</div>`;
       comments.forEach(c => {
         const showBadge = c.branch && c.branch !== state.currentBranch;
         const branchBadge = showBadge ? ` <span class="revue-branch-badge" title="Created on branch ${escHtml(c.branch)}">${escHtml(c.branch)}</span>` : '';
@@ -1861,6 +2049,68 @@ function injectWrapToggle(file, wrapper) {
       observeSxsForResize(wrapper);
     });
   }
+}
+
+// ── Per-file viewed (collapse) toggle ───────────────────────────────────────
+
+// Wires the diff2html-native Viewed checkbox into our persistence + collapse
+// behaviour. The label/input is part of the markup diff2html emits inside
+// every `.d2h-file-header`; we restore the checked state from
+// `state.viewedFiles`, then on change toggle `.revue-viewed` on the wrapper
+// (which the CSS uses to hide the body + dim the header) and save the cookie.
+//
+// We deliberately re-mount the input (clone-and-replace) before attaching so
+// any click handler diff2html attached via `fileContentToggle()` is dropped --
+// otherwise the user would see the body collapse/uncollapse twice per click.
+function wireViewedCheckbox(file, wrapper) {
+  const input = wrapper.querySelector('.d2h-file-collapse-input');
+  if (!input) return;
+  const fresh = input.cloneNode(true);
+  input.replaceWith(fresh);
+  fresh.checked = state.viewedFiles.has(file);
+  if (fresh.checked) wrapper.classList.add('revue-viewed');
+  fresh.addEventListener('change', () => {
+    if (fresh.checked) {
+      state.viewedFiles.add(file);
+      wrapper.classList.add('revue-viewed');
+    } else {
+      state.viewedFiles.delete(file);
+      wrapper.classList.remove('revue-viewed');
+    }
+    saveViewedFiles();
+  });
+}
+
+// Rewrites the diff2html-generated header of a commit-message wrapper to show
+// `<icon> <short-sha>  <subject>` instead of the raw sentinel file path, and
+// inserts an author/date span between the subject and the right-aligned
+// controls (Viewed checkbox + wrap toggle). CSS handles the rest (hiding the
+// +N -0 stats, the new-file tag, the + line prefix, the hunk info row, and
+// bolding the subject line).
+function decorateCommitHeader(meta, wrapper) {
+  const header = wrapper.querySelector('.d2h-file-header');
+  if (!header || header.dataset.revueCommitDecorated) return;
+  header.dataset.revueCommitDecorated = '1';
+  const nameEl = header.querySelector('.d2h-file-name');
+  if (nameEl) {
+    nameEl.innerHTML = `
+      <span class="revue-commit-icon" title="Commit message">📝</span>
+      <span class="revue-commit-hash" title="${escHtml(meta.hash)}">${escHtml(meta.hash.slice(0, 8))}</span>
+      <span class="revue-commit-subject" title="${escHtml(meta.subject || '')}">${escHtml(meta.subject || '')}</span>
+    `;
+  }
+  let dateText = meta.date;
+  try { dateText = new Date(meta.date).toLocaleString(); } catch {}
+  const metaEl = document.createElement('span');
+  metaEl.className = 'revue-commit-meta';
+  metaEl.textContent = `${meta.author || ''} · ${dateText}`;
+  // Place author/date BEFORE the Viewed checkbox so the metadata sits next to
+  // the subject and the user actions (Viewed, wrap) cluster on the far right.
+  const collapse = header.querySelector('.d2h-file-collapse');
+  const wrap = header.querySelector('.revue-wrap-toggle');
+  if (collapse) header.insertBefore(metaEl, collapse);
+  else if (wrap) header.insertBefore(metaEl, wrap);
+  else header.appendChild(metaEl);
 }
 
 // In SxS mode each side is its own table, so wrapped lines on one side won't
