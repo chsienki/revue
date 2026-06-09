@@ -270,3 +270,4 @@ This gives the user a fully normal Edge window (movable, resizable, F12 DevTools
 
 - 2026-05-06: Diffs should match filelist
 - 2026-05-06: Single instance targeting multiple directories -- selector + directory/repo name
+- 2026-06-09: NativeAOT desktop binary that wraps the webapp for fast launch, not tied to the browser (likely requires 'single instance, multi repo' work first)
