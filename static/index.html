@@ -878,6 +878,123 @@ function loadPref(key, fallback) {
   return m ? decodeURIComponent(m[1]) : fallback;
 }
 
+// ── URL hash state ─────────────────────────────────────────────────────────
+//
+// The location.hash carries the *per-review* context (which refs we're
+// comparing, which commit range is selected, which file the user was last on)
+// so a refresh restores exactly that, browser back/forward steps through
+// review contexts, and copy-pasting the URL is a deeplink. Personal display
+// preferences (theme, layout, ignoreWhitespace, viewedFiles, etc.) stay in
+// cookies -- a deeplink shouldn't impose the sender's preferences on the
+// recipient.
+//
+// Format: #base=<branch>&head=<branch>&range=<start..end>&file=<encoded-path>
+//
+// `base` and `head` are the *branch context* (what the topbar selectors show),
+// never the resolved diff endpoints. When `range` is also set, it overrides
+// the branch context to scope the diff to one commit or a commit range; the
+// resolved state.base / state.head are then derived from `range`, so the
+// branch context stays intact for "clear range" / back-navigation. Range is
+// stored as `older..newer` so derivation is deterministic without depending
+// on state.commits being loaded.
+
+let _applyingHash = false;
+
+function parseHashState() {
+  const raw = location.hash.startsWith('#') ? location.hash.slice(1) : location.hash;
+  if (!raw) return {};
+  const out = {};
+  for (const part of raw.split('&')) {
+    if (!part) continue;
+    const eq = part.indexOf('=');
+    if (eq < 0) continue;
+    const k = decodeURIComponent(part.slice(0, eq));
+    const v = decodeURIComponent(part.slice(eq + 1));
+    out[k] = v;
+  }
+  return out;
+}
+
+function buildHashFromState() {
+  const parts = [];
+  if (state.logBase) parts.push(`base=${encodeURIComponent(state.logBase)}`);
+  parts.push(`head=${encodeURIComponent(state.logHead || 'HEAD')}`);
+  if (state.rangeStart) {
+    // For single-commit or working-tree selections, no end exists.
+    if (!state.rangeEnd || state.rangeEnd === state.rangeStart || state.rangeStart === '~working~') {
+      parts.push(`range=${encodeURIComponent(state.rangeStart)}`);
+    } else {
+      // Both ends set: reorder to `older..newer` using state.commits so
+      // restoration can derive base/head without needing the commit list
+      // (commits are loaded on demand when the picker is opened).
+      const commits = state.commits || [];
+      const si = commits.findIndex(c => c.hash === state.rangeStart);
+      const ei = commits.findIndex(c => c.hash === state.rangeEnd);
+      // commits are newest-first, so higher index = older.
+      let older = state.rangeStart, newer = state.rangeEnd;
+      if (si >= 0 && ei >= 0 && si < ei) {
+        older = state.rangeEnd; newer = state.rangeStart;
+      }
+      parts.push(`range=${encodeURIComponent(`${older}..${newer}`)}`);
+    }
+  }
+  if (state.currentFile) parts.push(`file=${encodeURIComponent(state.currentFile)}`);
+  return parts.length ? '#' + parts.join('&') : '';
+}
+
+// `mode` is 'push' for big context switches (base/head/range) that deserve
+// a back-button entry, or 'replace' for incidental updates (currentFile,
+// scroll position) that would otherwise spam history.
+function writeHashFromState(mode) {
+  if (_applyingHash) return;
+  const newHash = buildHashFromState();
+  const current = location.hash || '';
+  if (newHash === current) return;
+  const url = location.pathname + location.search + (newHash || '#');
+  if (mode === 'push') history.pushState(null, '', url);
+  else history.replaceState(null, '', url);
+}
+
+// Apply a parsed hash object to state. Always re-derives state.base /
+// state.head from logBase / logHead + range so navigating BACK from a
+// range-overridden view restores the underlying branch diff. Returns true
+// if anything review-relevant changed so callers know to re-fetch.
+function applyHashToState(parsed) {
+  const before = {
+    base: state.base, head: state.head,
+    start: state.rangeStart, end: state.rangeEnd,
+    logBase: state.logBase, logHead: state.logHead,
+  };
+
+  if (parsed.base) state.logBase = parsed.base;
+  state.logHead = parsed.head || 'HEAD';
+
+  const range = parsed.range || '';
+  const [rs, re] = range ? range.split('..') : [null, null];
+  state.rangeStart = rs || null;
+  state.rangeEnd = re || null;
+
+  if (!state.rangeStart) {
+    state.base = state.logBase;
+    state.head = state.logHead;
+  } else if (state.rangeStart === '~working~') {
+    state.base = 'HEAD'; state.head = 'HEAD';
+  } else if (!state.rangeEnd) {
+    state.base = state.rangeStart + '^';
+    state.head = state.rangeStart;
+  } else {
+    state.base = state.rangeStart + '^';
+    state.head = state.rangeEnd === '~working~' ? 'HEAD' : state.rangeEnd;
+  }
+
+  state.currentFile = parsed.file || null;
+
+  return state.base !== before.base
+      || state.head !== before.head
+      || state.rangeStart !== before.start
+      || state.rangeEnd !== before.end;
+}
+
 // Restore saved preferences
 state.ignoreWhitespace = loadPref('ignoreWhitespace', 'false') === 'true';
 state.diffLayout = loadPref('diffLayout', 'side-by-side');
@@ -1009,6 +1126,12 @@ async function init() {
   state.logHead = state.head;
   state.currentBranch = cfg.currentBranch || null;
 
+  // Hash overrides defaults so a refresh / deeplink restores the exact review
+  // context. Done here, before any UI is wired, so the branch selectors below
+  // pick up the restored values and loadFiles() runs against them.
+  const initialHash = parseHashState();
+  applyHashToState(initialHash);
+
   if (cfg.version) {
     const hash = cfg.commitHash ? ` (${cfg.commitHash})` : '';
     document.getElementById('version-label').textContent = `v${cfg.version}${hash}`;
@@ -1024,20 +1147,60 @@ async function init() {
 
   const baseSel = document.getElementById('base-sel');
   const headSel = document.getElementById('head-sel');
-  const refs = [state.head, ...branches];
+  const refs = [state.logHead, ...branches];
   refs.forEach(b => {
-    baseSel.add(new Option(b, b, false, b === state.base));
-    headSel.add(new Option(b, b, false, b === state.head));
+    baseSel.add(new Option(b, b, false, b === state.logBase));
+    headSel.add(new Option(b, b, false, b === state.logHead));
   });
   // ensure default_base is in list
-  if (!refs.includes(state.base)) {
-    baseSel.add(new Option(state.base, state.base, false, true));
+  if (!refs.includes(state.logBase)) {
+    baseSel.add(new Option(state.logBase, state.logBase, false, true));
   }
-  baseSel.value = state.base;
-  headSel.value = state.head;
+  baseSel.value = state.logBase;
+  headSel.value = state.logHead;
 
-  baseSel.addEventListener('change', () => { state.base = baseSel.value; state.logBase = baseSel.value; state.rangeStart = null; state.rangeEnd = null; loadFiles(); });
-  headSel.addEventListener('change', () => { state.head = headSel.value; state.logHead = headSel.value; state.rangeStart = null; state.rangeEnd = null; loadFiles(); });
+  baseSel.addEventListener('change', () => {
+    state.base = baseSel.value; state.logBase = baseSel.value;
+    state.rangeStart = null; state.rangeEnd = null;
+    state.currentFile = null;
+    writeHashFromState('push');
+    loadFiles();
+  });
+  headSel.addEventListener('change', () => {
+    state.head = headSel.value; state.logHead = headSel.value;
+    state.rangeStart = null; state.rangeEnd = null;
+    state.currentFile = null;
+    writeHashFromState('push');
+    loadFiles();
+  });
+
+  // Back/forward navigates between review contexts. Re-apply the hash and, if
+  // the review-relevant fields changed (base/head/range), reload; otherwise
+  // just scroll to the file the hash points at.
+  window.addEventListener('hashchange', () => {
+    _applyingHash = true;
+    try {
+      const parsed = parseHashState();
+      const reviewChanged = applyHashToState(parsed);
+      // Keep the branch selectors + range label in sync with the restored
+      // state. The selectors show the branch context (logBase / logHead), not
+      // the resolved diff endpoints, since the user might be in a range-
+      // override where base/head are commit hashes.
+      const baseSel = document.getElementById('base-sel');
+      const headSel = document.getElementById('head-sel');
+      if (baseSel && baseSel.value !== state.logBase) baseSel.value = state.logBase;
+      if (headSel && headSel.value !== state.logHead) headSel.value = state.logHead;
+      renderCommitRangeLabel();
+      if (reviewChanged) {
+        loadFiles();
+      } else if (state.currentFile) {
+        renderFileList();
+        jumpToFile(state.currentFile);
+      }
+    } finally {
+      _applyingHash = false;
+    }
+  });
 
   document.getElementById('show-resolved').addEventListener('change', e => {
     state.showResolved = e.target.checked;
@@ -1126,6 +1289,11 @@ async function init() {
   await loadFiles();
   setupCommitsPanel();
   setupFilelistResize();
+  // Reflect any hash-restored commit range in the topbar label, and after the
+  // first load reflect the resolved review context in the URL so it's
+  // immediately copyable as a deeplink even before the user changes anything.
+  renderCommitRangeLabel();
+  writeHashFromState('replace');
 }
 
 function setupFilelistResize() {
@@ -1262,6 +1430,13 @@ async function loadFiles() {
   await renderAllDiffs();
   renderFileList(); // re-render with accurate badge counts after injection
   overlay.classList.remove('active');
+  // If a hash-restored / deeplink-supplied file is set, scroll to it now that
+  // the diffs are actually mounted in the DOM. Skip when the file isn't in
+  // the current diff (e.g. the user paged commits and the file is no longer
+  // present) -- jumpToFile() no-ops in that case.
+  if (state.currentFile && state.currentFile !== '__orphaned__') {
+    jumpToFile(state.currentFile);
+  }
 }
 
 // Files representing a commit message are flagged by the server with a sentinel
@@ -1360,6 +1535,7 @@ function renderFileList() {
       row.addEventListener('click', () => {
         state.currentFile = f.file;
         renderFileList();
+        writeHashFromState('replace');
         const target = document.getElementById(`file-${encodeFileId(f.file)}`);
         if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
       });
@@ -1441,6 +1617,7 @@ function renderFileList() {
       div.addEventListener('click', () => {
         state.currentFile = f.file;
         renderFileList();
+        writeHashFromState('replace');
         jumpToFile(f.file);
       });
       container.appendChild(div);
@@ -1478,6 +1655,7 @@ function renderOrphanedTreeEntry(el) {
   `;
   div.addEventListener('click', async () => {
     state.currentFile = '__orphaned__';
+    writeHashFromState('replace');
     // Ensure the window includes the end so the orphaned section is mounted
     if (isWindowed()) {
       const lastStart = Math.max(0, state.files.length - state.windowSize);
@@ -2494,45 +2672,25 @@ function renderCommitList() {
   });
 }
 
-function applyCommitRange() {
-  const commits = state.commits || [];
+function renderCommitRangeLabel() {
   const btn = document.getElementById('commits-btn');
   const label = document.getElementById('commit-range-label');
-  if (!state.rangeStart) return;
-
-  const isWorkingTree = state.rangeStart === '~working~';
-
-  if (!state.rangeEnd) {
-    if (isWorkingTree) {
-      // Working tree: diff from HEAD to working tree (uncommitted changes only)
-      state.base = 'HEAD';
-      state.head = 'HEAD';
-      btn.classList.add('range-active');
-      label.className = 'active';
-      label.innerHTML = `Working tree <span class="range-clear" title="Clear selection">✕</span>`;
-    } else {
-      // Single commit: diff just that commit (parent..commit)
-      state.base = state.rangeStart + '^';
-      state.head = state.rangeStart;
-      btn.classList.add('range-active');
-      label.className = 'active';
-      label.innerHTML = `${state.rangeStart.slice(0, 8)} <span class="range-clear" title="Clear selection">✕</span>`;
-    }
+  if (!btn || !label) return;
+  if (!state.rangeStart) {
+    btn.classList.remove('range-active');
+    label.className = '';
+    label.innerHTML = '';
+    return;
+  }
+  btn.classList.add('range-active');
+  label.className = 'active';
+  if (state.rangeStart === '~working~') {
+    label.innerHTML = `Working tree <span class="range-clear" title="Clear selection">✕</span>`;
+  } else if (!state.rangeEnd || state.rangeEnd === state.rangeStart) {
+    label.innerHTML = `${state.rangeStart.slice(0, 8)} <span class="range-clear" title="Clear selection">✕</span>`;
   } else {
-    // Range: find the older and newer commits
-    let si = commits.findIndex(c => c.hash === state.rangeStart);
-    let ei = commits.findIndex(c => c.hash === state.rangeEnd);
-    // commits are newest-first, so higher index = older
-    if (si > ei) { const t = si; si = ei; ei = t; }
-    const newerHash = commits[si].hash;
-    const olderHash = commits[ei].hash;
-    // If the newer end is working tree, use HEAD
-    const newerRef = newerHash === '~working~' ? 'HEAD' : newerHash;
-    state.base = olderHash + '^';
-    state.head = newerRef;
-    btn.classList.add('range-active');
-    label.className = 'active';
-    label.innerHTML = `${olderHash.slice(0, 8)} → ${newerHash === '~working~' ? 'Working tree' : newerHash.slice(0, 8)} <span class="range-clear" title="Clear selection">✕</span>`;
+    const endLabel = state.rangeEnd === '~working~' ? 'Working tree' : state.rangeEnd.slice(0, 8);
+    label.innerHTML = `${state.rangeStart.slice(0, 8)} → ${endLabel} <span class="range-clear" title="Clear selection">✕</span>`;
   }
   label.querySelector('.range-clear')?.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -2540,12 +2698,46 @@ function applyCommitRange() {
     state.rangeEnd = null;
     state.base = state.logBase;
     state.head = state.logHead;
-    btn.classList.remove('range-active');
-    label.className = '';
-    label.innerHTML = '';
+    state.currentFile = null;
+    renderCommitRangeLabel();
+    writeHashFromState('push');
     loadFiles();
   });
+}
+
+function applyCommitRange() {
+  const commits = state.commits || [];
+  if (!state.rangeStart) return;
+
+  // Normalize: state.rangeStart is the OLDER endpoint, state.rangeEnd the
+  // NEWER. The user's click order doesn't necessarily reflect that, so we
+  // swap when the picker put newer first. The hash writer relies on this
+  // invariant so URL restoration can derive base/head deterministically.
+  if (state.rangeEnd && state.rangeStart !== state.rangeEnd && state.rangeStart !== '~working~') {
+    const si = commits.findIndex(c => c.hash === state.rangeStart);
+    const ei = commits.findIndex(c => c.hash === state.rangeEnd);
+    // commits are newest-first: higher index = older
+    if (si >= 0 && ei >= 0 && si < ei) {
+      const t = state.rangeStart; state.rangeStart = state.rangeEnd; state.rangeEnd = t;
+    }
+  }
+
+  if (state.rangeStart === '~working~') {
+    state.base = 'HEAD'; state.head = 'HEAD';
+  } else if (!state.rangeEnd) {
+    state.base = state.rangeStart + '^';
+    state.head = state.rangeStart;
+  } else {
+    state.base = state.rangeStart + '^';
+    state.head = state.rangeEnd === '~working~' ? 'HEAD' : state.rangeEnd;
+  }
+
+  renderCommitRangeLabel();
   document.getElementById('commits-panel').classList.remove('open');
+  // Changing the commit range is a big context switch -- give it a back-button
+  // entry so the user can step back to their previous range or branch view.
+  state.currentFile = null;
+  writeHashFromState('push');
   loadFiles();
 }
 

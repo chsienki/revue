@@ -109,14 +109,34 @@ The native `<label class="d2h-file-collapse"><input class="d2h-file-collapse-inp
 ## Frontend state management
 
 - All UI state lives in a global `state` object
-- `state.logBase`/`state.logHead` track branch selector values (used for the git log query)
-- `state.base`/`state.head` track the actual diff range (modified by commit selection)
-- `state.rangeStart`/`state.rangeEnd` track commit range selection
+- `state.logBase`/`state.logHead` are the **branch context** (what the topbar selectors show). They survive commit-range overrides so "clear range" / back-navigation restores the underlying branch diff.
+- `state.base`/`state.head` are the **resolved diff endpoints** actually passed to `/api/diff`. When no range is active they mirror `logBase`/`logHead`; when a range is active they're derived from it (single commit → `<hash>^..<hash>`; range → `<older>^..<newer>`; working tree → `HEAD..HEAD`).
+- `state.rangeStart`/`state.rangeEnd` track commit range selection. Stored normalized to `rangeStart = older`, `rangeEnd = newer` so derivation and URL serialization are deterministic.
 - `state.files` is the **complete** ordered list returned by `/api/diff` -- commit-sentinel files (when `state.showCommitMessages` is true) followed by real files. Treat it as the single source of truth; downstream code (`renderFileList`, `renderAllDiffs`, `computeGloballyInjectableIds`, `commentCountForFile`) handles commits and real files uniformly except where cosmetics differ.
 - `state.currentBranch` is the live git branch (or `null` when detached HEAD); `state.showAllBranches` toggles the branch filter
 - Branch selector changes reset both log and diff state plus the range
 - User preferences (`ignoreWhitespace`, `diffLayout`, `showResolved`, `showCommitMessages`, `theme`, `showAllBranches`) are persisted as cookies via `savePref()`/`loadPref()`
 - Per-wrapper state (`wrappedFiles`, `viewedFiles`) is a `Set` persisted as a newline-separated cookie. Both file paths and commit-message sentinels (`revue::commit::<sha>`) coexist in `viewedFiles`.
+
+## URL hash state
+
+The `location.hash` carries the **per-review** context so a refresh restores it, browser back/forward steps through review contexts, and copy-pasting the URL is a deeplink. Format:
+
+```
+#base=<branch>&head=<branch>&range=<older..newer>&file=<encoded-path>
+```
+
+- `base`, `head` are the **branch context** (the topbar selectors), never the resolved diff endpoints. Both are always present.
+- `range` is optional; when present it overrides the branch context to scope the diff to a single commit (`<sha>`), a commit range (`<older>..<newer>`, normalized via `state.commits` ordering when written), or working-tree-only changes (`~working~`). Resolved `state.base`/`state.head` are then derived from `range`, leaving the branch context intact for "clear range" / back-navigation.
+- `file` is the currently selected file; sentinels (`revue::commit::<sha>`) and real paths both fit. Restored after `loadFiles()` via `jumpToFile()`.
+
+**What's *not* in the hash:** personal display preferences (`theme`, `diffLayout`, `ignoreWhitespace`, `showResolved`, `showAllBranches`, `showCommitMessages`, `windowSize`) and per-user file state (`wrappedFiles`, `viewedFiles`) stay in cookies. A deeplink shouldn't impose the sender's preferences on the recipient.
+
+**History strategy:**
+- `pushState` for context switches (base/head selector change, commit-range selection / clear) -- earn a back-button entry.
+- `replaceState` for incidental updates (file click, initial post-load URL canonicalization).
+
+**Implementation:** see `parseHashState` / `buildHashFromState` / `applyHashToState` / `writeHashFromState` near the top of `static/index.html`. A `_applyingHash` flag short-circuits `writeHashFromState` while a `hashchange` listener is applying state from the URL, preventing infinite write↔parse loops.
 
 ## Comment schema (JSON)
 
