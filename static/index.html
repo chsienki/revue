@@ -387,6 +387,43 @@
     font-size: 0.625rem;
     font-weight: 700;
   }
+  .comment-badge.clickable { cursor: pointer; }
+  .comment-badge.clickable:hover { box-shadow: 0 0 0 2px var(--accent); }
+
+  /* Comment jump picker -- opened from a file-list comment badge */
+  .comment-jump-menu {
+    position: fixed;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    z-index: 200;
+    min-width: 240px;
+    max-width: 440px;
+    max-height: 320px;
+    overflow-y: auto;
+    box-shadow: 0 4px 16px #0008;
+    padding: 4px 0;
+  }
+  .comment-jump-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    cursor: pointer;
+    font-size: 0.75rem;
+    user-select: none;
+  }
+  .comment-jump-item:hover { background: var(--bg3); }
+  .comment-jump-item.resolved { opacity: 0.55; }
+  .comment-jump-line { font-family: var(--mono); color: var(--accent); flex-shrink: 0; }
+  .comment-jump-author { flex-shrink: 0; }
+  .comment-jump-preview { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+
+  @keyframes revue-comment-flash-kf {
+    0%   { box-shadow: 0 0 0 2px var(--accent), 0 0 14px 3px var(--accent); }
+    100% { box-shadow: 0 0 0 0 transparent; }
+  }
+  .revue-comment-flash { animation: revue-comment-flash-kf 1.5s ease-out; }
 
   /* Diff viewer */
   #diffview {
@@ -1465,9 +1502,13 @@ function sortFilesTreeOrder(files) {
   });
 }
 
-function commentCountForFile(file) {
+function commentsForFile(file) {
   const ids = state._globallyInjectableIds;
-  return state.comments.filter(c => c.file === file && (state.showResolved || !c.resolved) && branchVisible(c) && (!ids || ids.has(c.id))).length;
+  return state.comments.filter(c => c.file === file && (state.showResolved || !c.resolved) && branchVisible(c) && (!ids || ids.has(c.id)));
+}
+
+function commentCountForFile(file) {
+  return commentsForFile(file).length;
 }
 
 // Precompute which comment IDs would be injectable across the entire diff
@@ -1526,7 +1567,8 @@ function renderFileList() {
       row.className = 'commit-tree-item' + (state.currentFile === f.file ? ' active' : '');
       const subject = f.commit?.subject || '';
       const hash = f.commit?.hash || '';
-      const cnt = commentCountForFile(f.file);
+      const fileComments = commentsForFile(f.file);
+      const cnt = fileComments.length;
       row.innerHTML = `
         <span class="commit-tree-hash">${escHtml(hash.slice(0, 8))}</span>
         <span class="commit-tree-subject" title="${escHtml(subject)}">${escHtml(subject)}</span>
@@ -1540,6 +1582,7 @@ function renderFileList() {
         if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
       });
       el.appendChild(row);
+      wireCommentBadge(row, fileComments);
     });
   }
 
@@ -1604,7 +1647,8 @@ function renderFileList() {
     });
 
     sortedFiles.forEach(f => {
-      const cnt = commentCountForFile(f.file);
+      const fileComments = commentsForFile(f.file);
+      const cnt = fileComments.length;
       const div = document.createElement('div');
       const fileName = f.file.split('/').pop();
       div.className = 'file-item' + (f.file === state.currentFile ? ' active' : '');
@@ -1621,6 +1665,7 @@ function renderFileList() {
         jumpToFile(f.file);
       });
       container.appendChild(div);
+      wireCommentBadge(div, fileComments);
     });
   }
 
@@ -1670,6 +1715,157 @@ function renderOrphanedTreeEntry(el) {
     if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
   el.appendChild(div);
+  wireCommentBadge(div, orphanedForTree);
+}
+
+// ── Jump to comment ────────────────────────────────────────────────────────
+
+// Scroll the diff view to a specific comment and briefly flash it. Mounts the
+// comment's file into the render window first if it's outside the current
+// slice. Handles both injected comments (rendered inline in a file diff with a
+// data-id) and orphaned comments (rendered in the bottom "Other comments"
+// section with a data-orphan-id).
+async function jumpToComment(commentId) {
+  const c = state.comments.find(x => x.id === commentId);
+  if (!c) return;
+  const injectable = (!state._globallyInjectableIds || state._globallyInjectableIds.has(commentId))
+    && state.files.some(f => f.file === c.file);
+
+  if (injectable) {
+    state.currentFile = c.file;
+    const idx = state.files.findIndex(f => f.file === c.file);
+    const { start, end } = getWindowSlice();
+    if (idx < start || idx >= end) {
+      state.windowStart = idx;
+      await renderAllDiffs({ skipPin: true });
+    }
+  } else {
+    // Orphaned comments live in the "Other comments" section pinned to the
+    // bottom, which only mounts when the window includes the last file.
+    state.currentFile = '__orphaned__';
+    if (isWindowed()) {
+      const lastStart = Math.max(0, state.files.length - state.windowSize);
+      if (state.windowStart !== lastStart) {
+        state.windowStart = lastStart;
+        await renderAllDiffs({ skipPin: true });
+      }
+    }
+  }
+  renderFileList();
+  writeHashFromState('replace');
+
+  const sel = injectable
+    ? `.revue-comment-item[data-id="${cssEsc(commentId)}"]`
+    : `.revue-comment-item[data-orphan-id="${cssEsc(commentId)}"]`;
+  const el = document.querySelector(sel);
+  if (el) {
+    flashComment(el);
+  } else {
+    // Fall back to the file / section anchor if the comment node isn't present.
+    const anchorId = injectable ? `file-${encodeFileId(c.file)}` : 'file-__orphaned__';
+    const target = document.getElementById(anchorId);
+    if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
+
+function flashComment(el) {
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  el.classList.remove('revue-comment-flash');
+  void el.offsetWidth; // restart the animation when re-triggered on the same node
+  el.classList.add('revue-comment-flash');
+  setTimeout(() => el.classList.remove('revue-comment-flash'), 1600);
+}
+
+function cssEsc(s) {
+  return (window.CSS && CSS.escape) ? CSS.escape(String(s)) : String(s).replace(/["\\]/g, '\\$&');
+}
+
+// Make a file-list comment badge a jump target: a single comment jumps
+// straight there; multiple comments open a picker menu.
+function wireCommentBadge(rowEl, comments) {
+  const badge = rowEl.querySelector('.comment-badge');
+  if (!badge || !comments || !comments.length) return;
+  badge.classList.add('clickable');
+  badge.title = comments.length === 1 ? 'Jump to comment' : `Jump to a comment (${comments.length})`;
+  badge.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (comments.length === 1) {
+      jumpToComment(comments[0].id);
+    } else {
+      openCommentJumpMenu(badge, comments);
+    }
+  });
+}
+
+let _commentJumpMenu = null;
+
+function closeCommentJumpMenu() {
+  if (!_commentJumpMenu) return;
+  _commentJumpMenu.remove();
+  _commentJumpMenu = null;
+  document.removeEventListener('mousedown', _onCommentJumpOutside, true);
+  document.removeEventListener('keydown', _onCommentJumpKey, true);
+  document.removeEventListener('scroll', closeCommentJumpMenu, true);
+  window.removeEventListener('resize', closeCommentJumpMenu);
+}
+
+function _onCommentJumpOutside(e) {
+  if (_commentJumpMenu && !_commentJumpMenu.contains(e.target)) closeCommentJumpMenu();
+}
+function _onCommentJumpKey(e) {
+  if (e.key === 'Escape') closeCommentJumpMenu();
+}
+
+// Open a popover next to a comment badge listing every comment on that file so
+// the user can pick which one to jump to. Uses fixed positioning + append to
+// <body> so the file-list's overflow doesn't clip it.
+function openCommentJumpMenu(anchorEl, comments) {
+  closeCommentJumpMenu();
+  const menu = document.createElement('div');
+  menu.className = 'comment-jump-menu';
+  const sorted = [...comments].sort((a, b) => (a.line || 0) - (b.line || 0));
+  sorted.forEach(c => {
+    const item = document.createElement('div');
+    item.className = 'comment-jump-item' + (c.resolved ? ' resolved' : '');
+    const author = c.author === 'copilot' ? '🤖' : '👤';
+    const body = (c.body || '').replace(/\s+/g, ' ').trim();
+    const preview = body.length > 80 ? body.slice(0, 80) + '…' : (body || '(no text)');
+    item.innerHTML = `
+      <span class="comment-jump-line">L${c.line}</span>
+      <span class="comment-jump-author">${author}</span>
+      <span class="comment-jump-preview">${escHtml(preview)}</span>`;
+    item.addEventListener('click', (e) => {
+      e.stopPropagation();
+      closeCommentJumpMenu();
+      jumpToComment(c.id);
+    });
+    menu.appendChild(item);
+  });
+  document.body.appendChild(menu);
+  _commentJumpMenu = menu;
+  positionCommentJumpMenu(menu, anchorEl);
+  // Defer wiring the dismiss listeners so the opening click doesn't close it.
+  setTimeout(() => {
+    if (!_commentJumpMenu) return;
+    document.addEventListener('mousedown', _onCommentJumpOutside, true);
+    document.addEventListener('keydown', _onCommentJumpKey, true);
+    document.addEventListener('scroll', closeCommentJumpMenu, true);
+    window.addEventListener('resize', closeCommentJumpMenu);
+  }, 0);
+}
+
+function positionCommentJumpMenu(menu, anchorEl) {
+  const r = anchorEl.getBoundingClientRect();
+  menu.style.visibility = 'hidden';
+  const mw = menu.offsetWidth;
+  const mh = menu.offsetHeight;
+  let left = r.left;
+  let top = r.bottom + 4;
+  if (left + mw > window.innerWidth - 8) left = Math.max(8, window.innerWidth - 8 - mw);
+  if (top + mh > window.innerHeight - 8) top = Math.max(8, r.top - 4 - mh);
+  menu.style.left = left + 'px';
+  menu.style.top = top + 'px';
+  menu.style.visibility = 'visible';
 }
 
 // ── Diff rendering ─────────────────────────────────────────────────────────
