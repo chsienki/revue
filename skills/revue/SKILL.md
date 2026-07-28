@@ -52,15 +52,39 @@ Start the revue server for the **current repository** so the user can review dif
    ```
    - `<current-repo-root>` is the git root of whatever repo the user is currently working in (use `git rev-parse --show-toplevel` to find it).
    - If the user is already in the revue repo itself, omit the trailing argument — it defaults to the current directory.
-3. The server automatically finds a free port starting at **7878** and opens the browser.
+3. What happens next depends on whether revue is already running:
+   - **No instance running** → a new server starts (first free port from **7878**), registers this repo, and opens the browser.
+   - **An instance is already running** → the launch hands this repo off to the running instance (registering it) and opens the browser focused on it, then the launched process **exits immediately**. It does *not* start a second server. One revue instance serves multiple repos, switchable from the topbar repo dropdown (each with an × to stop reviewing it).
 4. Tell the user the server is running and they can leave inline comments in the browser. Remind them to come back and say "address my revue comments" when they're done.
 
 ### Important
 
 - **Do NOT use npx, npm, pip, or any package manager to find or run revue.**
 - The bootstrap script handles downloading the correct platform-specific binary automatically.
-- The server **must** be started as a detached process (it needs to stay alive).
-- Don't wait for the server to exit — it runs until the user stops it.
+- Start it as a **detached** background process. A fresh instance stays alive until the user stops it, so don't wait for it to exit. If revue was already running, the launched process instead hands the repo off and exits right away — that quick exit is expected, not a failure.
+
+### Open against the right base branch
+
+revue shows the diff of `base..head`. With no base given it auto-detects one (`upstream/main` → `origin/main` → `main` → `HEAD~1`), which is frequently **not** what the user wants — changes are often meant to be reviewed against a feature or release branch, not `main`. You (the agent) usually know the intended base (the branch the work targets or was cut from), so point revue at it rather than accepting the default.
+
+The base and head live in the **URL hash**, so open the browser to a deeplink that names them:
+
+```
+http://127.0.0.1:7878/#base=<base-branch>&head=HEAD
+```
+
+- `<base-branch>` is the ref to compare against — e.g. `release/2.0`, `origin/develop`, `upstream/main`. It must be a ref that exists in the repo (local branch, `remote/branch`, tag, or sha).
+- `head` defaults to `HEAD` (the user's current branch / working tree); you can usually omit it.
+- The port is `7878` unless it was busy at launch (then the next free port revue picked).
+- In a multi-repo instance, also append `&repo=<url-encoded-repo-root>` so the base applies to the repo you mean (see Capability 1's hand-off note).
+
+So the launch flow is: start the server (above), then open the browser to the deeplink with the base you intend — e.g. for work targeting `release/2.0`:
+
+```
+http://127.0.0.1:7878/#base=release/2.0&head=HEAD
+```
+
+revue also opens a tab on the auto-detected base at startup; opening this deeplink is what scopes the review to the branch you actually want. Only fall back to the default when you genuinely don't know the base.
 
 ---
 
@@ -168,6 +192,8 @@ Content-Type: application/json
 ```
 
 Use `curl` or equivalent to post replies. Always use `"author": "copilot"` so the UI shows the reply as coming from Copilot (🤖).
+
+Since one instance can serve several repos, the reply endpoint locates the comment by its id across every registered repo, so you don't need to tell it which repo the comment belongs to.
 
 After posting all replies, tell the user to check the revue UI for your responses.
 

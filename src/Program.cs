@@ -16,12 +16,26 @@ if (args.Length > 0 && args[0] is "--version" or "-v")
     return;
 }
 
-// ── Repo root ────────────────────────────────────────────────────────────────
-var startPath = args.Length > 0 ? args[0] : Directory.GetCurrentDirectory();
-var repoRoot = FindRepoRoot(startPath);
-GitHelper.ResolveDefaultBase(repoRoot); // validate git works
-EnsureGitignore(repoRoot);
-var defaultBase = GitHelper.ResolveDefaultBase(repoRoot);
+// ── Launch repo ───────────────────────────────────────────────────────────────
+var startPath = args.Length > 0 && !args[0].StartsWith('-') ? args[0] : Directory.GetCurrentDirectory();
+string launchRoot;
+try { launchRoot = GitHelper.FindRepoRoot(startPath); }
+catch (Exception ex) { Console.Error.WriteLine(ex.Message); Environment.Exit(1); return; }
+
+// ── Single-instance hand-off ──────────────────────────────────────────────────
+// If a revue instance is already running on this machine, register this repo
+// with it and open the browser focused on that repo instead of starting a
+// second server. Idea #1: one instance targets multiple directories.
+var instanceFile = InstanceFilePath();
+var runningBaseUrl = await TryHandOffAsync(instanceFile, launchRoot);
+if (runningBaseUrl != null)
+{
+    var handoffUrl = $"{runningBaseUrl}/#repo={Uri.EscapeDataString(launchRoot)}";
+    Console.WriteLine($"revue already running  →  {runningBaseUrl}");
+    Console.WriteLine($"added repo             →  {launchRoot}");
+    OpenBrowser(handoffUrl);
+    return;
+}
 
 // ── Static content ───────────────────────────────────────────────────────────
 // Serve from disk when available (dev), fall back to embedded resource (published)
@@ -45,6 +59,21 @@ var jsonOpts = new JsonSerializerOptions
     PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
 };
+
+// ── Repo registry ────────────────────────────────────────────────────────────
+var registry = new RepoRegistry();
+try { registry.Add(launchRoot); }
+catch (Exception ex) { Console.Error.WriteLine($"Failed to open {launchRoot}: {ex.Message}"); Environment.Exit(1); return; }
+
+// Resolves the target repo for a request, or short-circuits with an error when
+// none is registered / the git operation throws.
+IResult WithRepo(string? repo, Func<RepoRegistry.Repo, IResult> fn)
+{
+    var r = registry.Resolve(repo);
+    if (r is null) return Results.Problem("No repository registered");
+    try { return fn(r); }
+    catch (Exception ex) { return Results.Problem(ex.Message); }
+}
 
 var app = builder.Build();
 app.UseCors();
@@ -114,184 +143,204 @@ _ = Task.Run(async () =>
     }
 });
 
-app.MapGet("/api/config", () => Results.Json(new
-{
-    defaultBase,
-    repoRoot,
-    version,
-    commitHash,
-    latestVersion,
-    updateCommand,
-    currentBranch = GitHelper.GetCurrentBranch(repoRoot),
-}, jsonOpts));
+// GET /api/ping — identifies this port as a revue instance for hand-off probing
+app.MapGet("/api/ping", () => Results.Json(new { app = "revue", version }, jsonOpts));
 
-// GET /api/current-branch — lightweight endpoint for polling branch changes
-app.MapGet("/api/current-branch", () =>
-    Results.Json(new { currentBranch = GitHelper.GetCurrentBranch(repoRoot) }, jsonOpts));
+// GET /api/repos — the repos this instance is serving (for the selector)
+app.MapGet("/api/repos", () =>
+    Results.Json(new { repos = registry.List(), primary = registry.PrimaryPath }, jsonOpts));
 
-// GET /api/branches
-app.MapGet("/api/branches", () =>
+// POST /api/repos — register a repo (used by the single-instance hand-off)
+app.MapPost("/api/repos", async (HttpRequest req) =>
 {
-    try
-    {
-        var raw = GitHelper.RunGit(["branch", "-a", "--format=%(refname:short)"], repoRoot);
-        var branches = raw.Split('\n', StringSplitOptions.RemoveEmptyEntries)
-                          .Select(b => b.Trim())
-                          .Where(b => b.Length > 0)
-                          .Distinct()
-                          .ToList();
-        return Results.Json(branches, jsonOpts);
-    }
+    AddRepoRequest? body;
+    try { body = await req.ReadFromJsonAsync<AddRepoRequest>(jsonOpts); }
+    catch { return Results.BadRequest("Invalid JSON"); }
+    if (body == null || string.IsNullOrWhiteSpace(body.Path))
+        return Results.BadRequest("path required");
+    try { return Results.Json(registry.Add(body.Path), jsonOpts); }
     catch (Exception ex) { return Results.Problem(ex.Message); }
 });
 
-// GET /api/changes-hash?base=X&head=Y — lightweight fingerprint for polling
-app.MapGet("/api/changes-hash", (string? @base, string? head) =>
+// DELETE /api/repos?path=X — stop serving a repo (the × in the selector)
+app.MapDelete("/api/repos", (string? path) =>
 {
-    try
-    {
-        var b = @base ?? defaultBase;
-        var h = head ?? "HEAD";
-        string stat;
-        if (h == "HEAD")
-        {
-            var mergeBase = GitHelper.GetMergeBase(b, "HEAD", repoRoot);
-            stat = GitHelper.RunGit(["diff", "--stat", mergeBase], repoRoot);
-            var untracked = GitHelper.RunGit(["ls-files", "--others", "--exclude-standard"], repoRoot);
-            stat += untracked;
-        }
-        else
-        {
-            stat = GitHelper.RunGit(["diff", "--stat", $"{b}...{h}"], repoRoot);
-        }
-        var hash = Convert.ToHexString(
-            System.Security.Cryptography.SHA256.HashData(
-                System.Text.Encoding.UTF8.GetBytes(stat)))[..16];
-        return Results.Json(new { hash }, jsonOpts);
-    }
-    catch (Exception ex) { return Results.Problem(ex.Message); }
+    if (string.IsNullOrWhiteSpace(path)) return Results.BadRequest("path required");
+    return registry.Remove(path)
+        ? Results.Ok()
+        : Results.Problem("Cannot remove: unknown repo or last remaining repo");
 });
 
-// GET /api/log?base=X&head=Y
-app.MapGet("/api/log", (string? @base, string? head) =>
+// GET /api/config?repo=X
+app.MapGet("/api/config", (string? repo) =>
 {
-    @base ??= defaultBase;
-    head ??= "HEAD";
-    try
+    var r = registry.Resolve(repo);
+    return Results.Json(new
     {
-        var raw = GitHelper.RunGit(
-            ["log", "--oneline", $"{@base}..{head}"], repoRoot);
-        var commits = raw.Split('\n', StringSplitOptions.RemoveEmptyEntries)
-                         .Select(l =>
-                         {
-                             var sp = l.IndexOf(' ');
-                             return new { hash = l[..sp], message = l[(sp + 1)..] };
-                         }).ToList();
-
-        if (head == "HEAD" && GitHelper.HasWorkingTreeChanges(repoRoot))
-            commits.Insert(0, new { hash = "~working~", message = "Working tree changes" });
-
-        return Results.Json(commits, jsonOpts);
-    }
-    catch (Exception ex) { return Results.Problem(ex.Message); }
+        version,
+        commitHash,
+        latestVersion,
+        updateCommand,
+        repos = registry.List(),
+        repo = r?.Path,
+        repoRoot = r?.Path,
+        defaultBase = r?.DefaultBase,
+        currentBranch = r == null ? null : GitHelper.GetCurrentBranch(r.Path),
+    }, jsonOpts);
 });
 
-// GET /api/diff?base=X&head=Y&ignoreWhitespace=true
-app.MapGet("/api/diff", (string? @base, string? head, bool? ignoreWhitespace) =>
+// GET /api/current-branch?repo=X — lightweight endpoint for polling branch changes
+app.MapGet("/api/current-branch", (string? repo) =>
 {
-    @base ??= defaultBase;
-    head ??= "HEAD";
+    var r = registry.Resolve(repo);
+    return Results.Json(new { currentBranch = r == null ? null : GitHelper.GetCurrentBranch(r.Path) }, jsonOpts);
+});
+
+// GET /api/branches?repo=X
+app.MapGet("/api/branches", (string? repo) => WithRepo(repo, r =>
+{
+    var raw = GitHelper.RunGit(["branch", "-a", "--format=%(refname:short)"], r.Path);
+    var branches = raw.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                      .Select(b => b.Trim())
+                      .Where(b => b.Length > 0)
+                      .Distinct()
+                      .ToList();
+    return Results.Json(branches, jsonOpts);
+}));
+
+// GET /api/changes-hash?repo=Z&base=X&head=Y — lightweight fingerprint for polling
+app.MapGet("/api/changes-hash", (string? repo, string? @base, string? head) => WithRepo(repo, r =>
+{
+    var b = @base ?? r.DefaultBase;
+    var h = head ?? "HEAD";
+    string stat;
+    if (h == "HEAD")
+    {
+        var mergeBase = GitHelper.GetMergeBase(b, "HEAD", r.Path);
+        stat = GitHelper.RunGit(["diff", "--stat", mergeBase], r.Path);
+        var untracked = GitHelper.RunGit(["ls-files", "--others", "--exclude-standard"], r.Path);
+        stat += untracked;
+    }
+    else
+    {
+        stat = GitHelper.RunGit(["diff", "--stat", $"{b}...{h}"], r.Path);
+    }
+    var hash = Convert.ToHexString(
+        System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(stat)))[..16];
+    return Results.Json(new { hash }, jsonOpts);
+}));
+
+// GET /api/log?repo=Z&base=X&head=Y
+app.MapGet("/api/log", (string? repo, string? @base, string? head) => WithRepo(repo, r =>
+{
+    var b = @base ?? r.DefaultBase;
+    var h = head ?? "HEAD";
+    var raw = GitHelper.RunGit(["log", "--oneline", $"{b}..{h}"], r.Path);
+    var commits = raw.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                     .Select(l =>
+                     {
+                         var sp = l.IndexOf(' ');
+                         return new { hash = l[..sp], message = l[(sp + 1)..] };
+                     }).ToList();
+
+    if (h == "HEAD" && GitHelper.HasWorkingTreeChanges(r.Path))
+        commits.Insert(0, new { hash = "~working~", message = "Working tree changes" });
+
+    return Results.Json(commits, jsonOpts);
+}));
+
+// GET /api/diff?repo=Z&base=X&head=Y&ignoreWhitespace=true
+app.MapGet("/api/diff", (string? repo, string? @base, string? head, bool? ignoreWhitespace) => WithRepo(repo, r =>
+{
+    var b = @base ?? r.DefaultBase;
+    var h = head ?? "HEAD";
     var wsFlag = ignoreWhitespace == true ? "-w" : null;
-    try
+    string raw;
+    if (h == "HEAD")
     {
-        string raw;
-        if (head == "HEAD")
-        {
-            var mergeBase = GitHelper.GetMergeBase(@base, "HEAD", repoRoot);
-            var args = new List<string> { "diff", "--unified=5" };
-            if (wsFlag != null) args.Add(wsFlag);
-            args.Add(mergeBase);
-            raw = GitHelper.RunGit([.. args], repoRoot);
+        var mergeBase = GitHelper.GetMergeBase(b, "HEAD", r.Path);
+        var gitArgs = new List<string> { "diff", "--unified=5" };
+        if (wsFlag != null) gitArgs.Add(wsFlag);
+        gitArgs.Add(mergeBase);
+        raw = GitHelper.RunGit([.. gitArgs], r.Path);
 
-            // Append untracked files
-            foreach (var f in GitHelper.GetUntrackedFiles(repoRoot))
-                raw += GitHelper.GetUntrackedFileDiff(f, repoRoot);
-        }
-        else
-        {
-            var args = new List<string> { "diff", "--unified=5" };
-            if (wsFlag != null) args.Add(wsFlag);
-            args.Add($"{@base}...{head}");
-            raw = GitHelper.RunGit([.. args], repoRoot);
-        }
-        var files = GitHelper.ParseDiff(raw);
-        // Prepend a virtual diff file per commit message so commit messages
-        // flow through the same render/comment/viewed pipeline as real files.
-        // Skip when base == head (working-tree-only view: no commits to list).
-        if (!string.Equals(@base, head, StringComparison.Ordinal))
-        {
-            try
-            {
-                var commitDiffs = GitHelper.BuildCommitMessageDiffs(@base, head, repoRoot);
-                files.InsertRange(0, commitDiffs);
-            }
-            catch { /* best-effort; a bad ref shouldn't break the file diff response */ }
-        }
-        return Results.Json(files, jsonOpts);
+        // Append untracked files
+        foreach (var f in GitHelper.GetUntrackedFiles(r.Path))
+            raw += GitHelper.GetUntrackedFileDiff(f, r.Path);
     }
-    catch (Exception ex) { return Results.Problem(ex.Message); }
-});
+    else
+    {
+        var gitArgs = new List<string> { "diff", "--unified=5" };
+        if (wsFlag != null) gitArgs.Add(wsFlag);
+        gitArgs.Add($"{b}...{h}");
+        raw = GitHelper.RunGit([.. gitArgs], r.Path);
+    }
+    var files = GitHelper.ParseDiff(raw);
+    // Prepend a virtual diff file per commit message so commit messages
+    // flow through the same render/comment/viewed pipeline as real files.
+    // Skip when base == head (working-tree-only view: no commits to list).
+    if (!string.Equals(b, h, StringComparison.Ordinal))
+    {
+        try
+        {
+            var commitDiffs = GitHelper.BuildCommitMessageDiffs(b, h, r.Path);
+            files.InsertRange(0, commitDiffs);
+        }
+        catch { /* best-effort; a bad ref shouldn't break the file diff response */ }
+    }
+    return Results.Json(files, jsonOpts);
+}));
 
-// GET /api/file-diff?base=X&head=Y&file=F&ignoreWhitespace=true&context=5
-app.MapGet("/api/file-diff", (string? @base, string? head, string? file, bool? ignoreWhitespace, int? context) =>
+// GET /api/file-diff?repo=Z&base=X&head=Y&file=F&ignoreWhitespace=true&context=5
+app.MapGet("/api/file-diff", (string? repo, string? @base, string? head, string? file, bool? ignoreWhitespace, int? context) => WithRepo(repo, r =>
 {
-    @base ??= defaultBase;
-    head ??= "HEAD";
     if (string.IsNullOrWhiteSpace(file))
         return Results.BadRequest("file parameter required");
+    var b = @base ?? r.DefaultBase;
+    var h = head ?? "HEAD";
     var wsFlag = ignoreWhitespace == true ? "-w" : null;
     var contextLines = context ?? 5;
-    try
+    string raw;
+    if (h == "HEAD")
     {
-        string raw;
-        if (head == "HEAD")
-        {
-            var mergeBase = GitHelper.GetMergeBase(@base, "HEAD", repoRoot);
-            var args = new List<string> { "diff", $"--unified={contextLines}" };
-            if (wsFlag != null) args.Add(wsFlag);
-            args.AddRange([mergeBase, "--", file]);
-            raw = GitHelper.RunGit([.. args], repoRoot);
+        var mergeBase = GitHelper.GetMergeBase(b, "HEAD", r.Path);
+        var gitArgs = new List<string> { "diff", $"--unified={contextLines}" };
+        if (wsFlag != null) gitArgs.Add(wsFlag);
+        gitArgs.AddRange([mergeBase, "--", file]);
+        raw = GitHelper.RunGit([.. gitArgs], r.Path);
 
-            // If no diff found, check if it's an untracked file
-            if (string.IsNullOrWhiteSpace(raw) && GitHelper.GetUntrackedFiles(repoRoot).Contains(file))
-                raw = GitHelper.GetUntrackedFileDiff(file, repoRoot);
-        }
-        else
-        {
-            var args = new List<string> { "diff", $"--unified={contextLines}" };
-            if (wsFlag != null) args.Add(wsFlag);
-            args.AddRange([$"{@base}...{head}", "--", file]);
-            raw = GitHelper.RunGit([.. args], repoRoot);
-        }
-        var files = GitHelper.ParseDiff(raw);
-        return Results.Json(files.FirstOrDefault(), jsonOpts);
+        // If no diff found, check if it's an untracked file
+        if (string.IsNullOrWhiteSpace(raw) && GitHelper.GetUntrackedFiles(r.Path).Contains(file))
+            raw = GitHelper.GetUntrackedFileDiff(file, r.Path);
     }
-    catch (Exception ex) { return Results.Problem(ex.Message); }
-});
+    else
+    {
+        var gitArgs = new List<string> { "diff", $"--unified={contextLines}" };
+        if (wsFlag != null) gitArgs.Add(wsFlag);
+        gitArgs.AddRange([$"{b}...{h}", "--", file]);
+        raw = GitHelper.RunGit([.. gitArgs], r.Path);
+    }
+    var files = GitHelper.ParseDiff(raw);
+    return Results.Json(files.FirstOrDefault(), jsonOpts);
+}));
 
-// GET /api/comments
-app.MapGet("/api/comments", () =>
-    Results.Json(CommentsStore.Load(repoRoot), jsonOpts));
+// GET /api/comments?repo=X
+app.MapGet("/api/comments", (string? repo) => WithRepo(repo, r =>
+    Results.Json(CommentsStore.Load(r.Path), jsonOpts)));
 
-// POST /api/comments
-app.MapPost("/api/comments", async (HttpRequest req) =>
+// POST /api/comments?repo=X
+app.MapPost("/api/comments", async (string? repo, HttpRequest req) =>
 {
+    var r = registry.Resolve(repo);
+    if (r is null) return Results.Problem("No repository registered");
+
     CommentRequest? cr;
     try { cr = await req.ReadFromJsonAsync<CommentRequest>(jsonOpts); }
     catch { return Results.BadRequest("Invalid JSON"); }
     if (cr == null) return Results.BadRequest("Empty body");
 
-    var comments = CommentsStore.Load(repoRoot);
+    var comments = CommentsStore.Load(r.Path);
 
     if (!string.IsNullOrEmpty(cr.Id))
     {
@@ -304,7 +353,7 @@ app.MapPost("/api/comments", async (HttpRequest req) =>
                 Body = cr.Body,
                 Resolved = cr.Resolved,
             };
-            CommentsStore.Save(repoRoot, comments);
+            CommentsStore.Save(r.Path, comments);
             return Results.Json(comments[idx], jsonOpts);
         }
     }
@@ -325,22 +374,29 @@ app.MapPost("/api/comments", async (HttpRequest req) =>
         Replies: [],
         // Capture the current git branch so we can filter comments per-branch.
         // null when detached HEAD or git fails — such comments show on all branches.
-        Branch: GitHelper.GetCurrentBranch(repoRoot)
+        Branch: GitHelper.GetCurrentBranch(r.Path)
     );
     comments.Add(comment);
-    CommentsStore.Save(repoRoot, comments);
+    CommentsStore.Save(r.Path, comments);
     return Results.Json(comment, jsonOpts);
 });
 
-// POST /api/comments/{id}/replies
-app.MapPost("/api/comments/{id}/replies", async (string id, HttpRequest req) =>
+// POST /api/comments/{id}/replies?repo=X
+app.MapPost("/api/comments/{id}/replies", async (string id, string? repo, HttpRequest req) =>
 {
     ReplyRequest? rr;
     try { rr = await req.ReadFromJsonAsync<ReplyRequest>(jsonOpts); }
     catch { return Results.BadRequest("Invalid JSON"); }
     if (rr == null) return Results.BadRequest("Empty body");
 
-    var comments = CommentsStore.Load(repoRoot);
+    // Prefer an explicit repo; otherwise find the store that owns this id so
+    // external callers (e.g. the Copilot skill) can reply without naming one.
+    var r = !string.IsNullOrEmpty(repo)
+        ? registry.Resolve(repo)
+        : registry.FindByCommentId(id) ?? registry.Resolve(null);
+    if (r is null) return Results.NotFound();
+
+    var comments = CommentsStore.Load(r.Path);
     var idx = comments.FindIndex(c => c.Id == id);
     if (idx < 0) return Results.NotFound();
 
@@ -353,64 +409,70 @@ app.MapPost("/api/comments/{id}/replies", async (string id, HttpRequest req) =>
     var replies = comments[idx].Replies ?? [];
     replies.Add(reply);
     comments[idx] = comments[idx] with { Replies = replies };
-    CommentsStore.Save(repoRoot, comments);
+    CommentsStore.Save(r.Path, comments);
     return Results.Json(reply, jsonOpts);
 });
 
-// DELETE /api/comments/{id}
-app.MapDelete("/api/comments/{id}", (string id) =>
+// DELETE /api/comments/{id}?repo=X
+app.MapDelete("/api/comments/{id}", (string id, string? repo) =>
 {
-    var comments = CommentsStore.Load(repoRoot);
+    var r = !string.IsNullOrEmpty(repo)
+        ? registry.Resolve(repo)
+        : registry.FindByCommentId(id) ?? registry.Resolve(null);
+    if (r is null) return Results.NotFound();
+
+    var comments = CommentsStore.Load(r.Path);
     var before = comments.Count;
     comments.RemoveAll(c => c.Id == id);
     if (comments.Count == before)
         return Results.NotFound();
-    CommentsStore.Save(repoRoot, comments);
+    CommentsStore.Save(r.Path, comments);
     return Results.Ok();
 });
 
-// POST /api/comments/delete-batch
-app.MapPost("/api/comments/delete-batch", async (HttpRequest req) =>
+// POST /api/comments/delete-batch?repo=X
+app.MapPost("/api/comments/delete-batch", async (string? repo, HttpRequest req) =>
 {
+    var r = registry.Resolve(repo);
+    if (r is null) return Results.Problem("No repository registered");
+
     List<string>? ids;
     try { ids = await req.ReadFromJsonAsync<List<string>>(jsonOpts); }
     catch { return Results.BadRequest("Invalid JSON"); }
     if (ids == null || ids.Count == 0) return Results.BadRequest("Empty list");
 
-    var comments = CommentsStore.Load(repoRoot);
+    var comments = CommentsStore.Load(r.Path);
     var idSet = new HashSet<string>(ids);
     comments.RemoveAll(c => idSet.Contains(c.Id));
-    CommentsStore.Save(repoRoot, comments);
+    CommentsStore.Save(r.Path, comments);
     return Results.Ok();
 });
 
-// GET /api/ref-status?ref=X — check if a remote-tracking ref is behind its remote
-app.MapGet("/api/ref-status", (string @ref) =>
+// GET /api/ref-status?repo=Z&ref=X — check if a remote-tracking ref is behind its remote
+app.MapGet("/api/ref-status", (string? repo, string @ref) => WithRepo(repo, r =>
 {
-    try
-    {
-        var status = GitHelper.CheckRefStatus(@ref, repoRoot);
-        if (status == null)
-            return Results.Json(new { tracking = false }, jsonOpts);
-        return Results.Json(new { tracking = true, remote = status.Remote, branch = status.Branch, behind = status.Behind }, jsonOpts);
-    }
-    catch (Exception ex) { return Results.Problem(ex.Message); }
-});
+    var status = GitHelper.CheckRefStatus(@ref, r.Path);
+    if (status == null)
+        return Results.Json(new { tracking = false }, jsonOpts);
+    return Results.Json(new { tracking = true, remote = status.Remote, branch = status.Branch, behind = status.Behind }, jsonOpts);
+}));
 
-// POST /api/fetch?remote=X&branch=Y — fetch a specific branch from a remote
-app.MapPost("/api/fetch", (string remote, string branch) =>
+// POST /api/fetch?repo=Z&remote=X&branch=Y — fetch a specific branch from a remote
+app.MapPost("/api/fetch", (string? repo, string remote, string branch) => WithRepo(repo, r =>
 {
-    try
-    {
-        GitHelper.FetchRef(remote, branch, repoRoot);
-        return Results.Ok();
-    }
-    catch (Exception ex) { return Results.Problem(ex.Message); }
-});
+    GitHelper.FetchRef(remote, branch, r.Path);
+    return Results.Ok();
+}));
+
+// ── Instance file ────────────────────────────────────────────────────────────
+// Record our port so a later `revue <other-repo>` launch can find and reuse us.
+WriteInstanceFile(instanceFile, port);
+app.Lifetime.ApplicationStopping.Register(() => DeleteInstanceFile(instanceFile, port));
+AppDomain.CurrentDomain.ProcessExit += (_, _) => DeleteInstanceFile(instanceFile, port);
 
 // ── Start ────────────────────────────────────────────────────────────────────
 Console.WriteLine($"revue  →  {url}");
-Console.WriteLine($"repo   →  {repoRoot}");
+Console.WriteLine($"repo   →  {launchRoot}");
 
 // Open browser after 800ms
 _ = Task.Run(async () =>
@@ -422,58 +484,6 @@ _ = Task.Run(async () =>
 app.Run();
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-static string FindRepoRoot(string start)
-{
-    var p = new DirectoryInfo(Path.GetFullPath(start));
-    while (true)
-    {
-        if (Directory.Exists(Path.Combine(p.FullName, ".git"))
-            || File.Exists(Path.Combine(p.FullName, ".git")))
-            return p.FullName;
-        if (p.Parent == null)
-            throw new InvalidOperationException($"No git repository found at or above {start}");
-        p = p.Parent;
-    }
-}
-
-static void EnsureGitignore(string repoRoot)
-{
-    const string entry = ".revue/";
-    // Resolve the actual .git directory (handles worktrees where .git is a file)
-    string gitDir;
-    var dotGit = Path.Combine(repoRoot, ".git");
-    if (File.Exists(dotGit))
-    {
-        // Worktree: .git is a file containing "gitdir: /path/to/git/dir"
-        var content = File.ReadAllText(dotGit).Trim();
-        if (content.StartsWith("gitdir:"))
-            gitDir = Path.GetFullPath(content["gitdir:".Length..].Trim(), repoRoot);
-        else
-            return;
-    }
-    else if (Directory.Exists(dotGit))
-    {
-        gitDir = dotGit;
-    }
-    else
-    {
-        return;
-    }
-
-    var exclude = Path.Combine(gitDir, "info", "exclude");
-    if (File.Exists(exclude))
-    {
-        var lines = File.ReadAllLines(exclude);
-        if (lines.Any(l => l.Trim() == entry)) return;
-        File.AppendAllText(exclude, $"\n{entry}\n");
-    }
-    else
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(exclude)!);
-        File.WriteAllText(exclude, $"{entry}\n");
-    }
-}
-
 static int FindFreePort(int preferred)
 {
     for (var port = preferred; port < preferred + 100; port++)
@@ -531,4 +541,81 @@ static bool IsNewerVersion(string candidate, string current)
     if (Version.TryParse(candidate, out var c) && Version.TryParse(current, out var v))
         return c > v;
     return string.Compare(candidate, current, StringComparison.Ordinal) > 0;
+}
+
+// Path of the per-user file that records the running instance's port. Same
+// location for the writer (a fresh instance) and the reader (a later launch
+// probing for an existing instance) since both run as the same user.
+static string InstanceFilePath()
+{
+    var baseDir = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+    if (string.IsNullOrEmpty(baseDir))
+        baseDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".cache");
+    return Path.Combine(baseDir, "revue", "instance.json");
+}
+
+static void WriteInstanceFile(string path, int port)
+{
+    try
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, JsonSerializer.Serialize(new { port, pid = Environment.ProcessId }));
+    }
+    catch { /* best-effort: hand-off simply won't find us */ }
+}
+
+// Only delete the file if it still points at our port, so we never clobber a
+// newer instance's registration during a racy restart.
+static void DeleteInstanceFile(string path, int port)
+{
+    try
+    {
+        if (!File.Exists(path)) return;
+        if (TryReadInstancePort(path) == port) File.Delete(path);
+    }
+    catch { /* best-effort */ }
+}
+
+static int? TryReadInstancePort(string path)
+{
+    try
+    {
+        if (!File.Exists(path)) return null;
+        using var doc = JsonDocument.Parse(File.ReadAllText(path));
+        if (doc.RootElement.TryGetProperty("port", out var p) && p.TryGetInt32(out var port))
+            return port;
+    }
+    catch { /* unreadable / malformed → treat as no instance */ }
+    return null;
+}
+
+// If a healthy revue instance is already running, register this repo with it
+// and return its base URL; otherwise return null (caller starts a fresh server).
+static async Task<string?> TryHandOffAsync(string instanceFile, string repoRoot)
+{
+    var port = TryReadInstancePort(instanceFile);
+    if (port is null) return null;
+
+    var baseUrl = $"http://127.0.0.1:{port}";
+    using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+    try
+    {
+        // Confirm the port actually belongs to a revue instance, not something
+        // else that grabbed it after a crash left a stale file behind.
+        var ping = await http.GetAsync($"{baseUrl}/api/ping");
+        if (!ping.IsSuccessStatusCode) return null;
+        using var doc = JsonDocument.Parse(await ping.Content.ReadAsStringAsync());
+        if (!doc.RootElement.TryGetProperty("app", out var appEl) || appEl.GetString() != "revue")
+            return null;
+
+        var payload = JsonSerializer.Serialize(new { path = repoRoot });
+        var resp = await http.PostAsync($"{baseUrl}/api/repos",
+            new StringContent(payload, System.Text.Encoding.UTF8, "application/json"));
+        return resp.IsSuccessStatusCode ? baseUrl : null;
+    }
+    catch
+    {
+        // Connection refused / timeout → stale file, start fresh.
+        return null;
+    }
 }

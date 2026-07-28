@@ -44,6 +44,14 @@ public record ReplyRequest(
 
 public record DiffFile(string File, string Patch, int Additions, int Deletions, CommitMeta? Commit = null);
 
+// A repository served by this instance, as exposed to the frontend. Name is a
+// minimal unique label (usually the last path segment) computed by RepoRegistry.
+public record RepoInfo(string Path, string Name, string DefaultBase);
+
+// Body of POST /api/repos, used by the single-instance hand-off to register a
+// repo launched from another terminal into the already-running instance.
+public record AddRepoRequest(string Path);
+
 public record RefStatus(string Remote, string Branch, int Behind);
 
 public record CommitInfo(string Hash, string Subject, string Body, string Author, string Date);

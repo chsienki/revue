@@ -214,6 +214,67 @@ public static class GitHelper
         return output.Split('\n', StringSplitOptions.RemoveEmptyEntries).ToList();
     }
 
+    /// <summary>
+    /// Walks up from <paramref name="start"/> until it finds a directory
+    /// containing a .git entry (dir for normal clones, file for worktrees) and
+    /// returns that directory's full path. Throws if none is found.
+    /// </summary>
+    public static string FindRepoRoot(string start)
+    {
+        var p = new DirectoryInfo(Path.GetFullPath(start));
+        while (true)
+        {
+            if (Directory.Exists(Path.Combine(p.FullName, ".git"))
+                || File.Exists(Path.Combine(p.FullName, ".git")))
+                return p.FullName;
+            if (p.Parent == null)
+                throw new InvalidOperationException($"No git repository found at or above {start}");
+            p = p.Parent;
+        }
+    }
+
+    /// <summary>
+    /// Ensures the local-only .revue/ directory is excluded via
+    /// .git/info/exclude (never .gitignore, which would be committed). Handles
+    /// worktrees where .git is a file pointing at the real git dir.
+    /// </summary>
+    public static void EnsureRevueIgnored(string repoRoot)
+    {
+        const string entry = ".revue/";
+        string gitDir;
+        var dotGit = Path.Combine(repoRoot, ".git");
+        if (File.Exists(dotGit))
+        {
+            // Worktree: .git is a file containing "gitdir: /path/to/git/dir"
+            var content = File.ReadAllText(dotGit).Trim();
+            if (content.StartsWith("gitdir:"))
+                gitDir = Path.GetFullPath(content["gitdir:".Length..].Trim(), repoRoot);
+            else
+                return;
+        }
+        else if (Directory.Exists(dotGit))
+        {
+            gitDir = dotGit;
+        }
+        else
+        {
+            return;
+        }
+
+        var exclude = Path.Combine(gitDir, "info", "exclude");
+        if (File.Exists(exclude))
+        {
+            var lines = File.ReadAllLines(exclude);
+            if (lines.Any(l => l.Trim() == entry)) return;
+            File.AppendAllText(exclude, $"\n{entry}\n");
+        }
+        else
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(exclude)!);
+            File.WriteAllText(exclude, $"{entry}\n");
+        }
+    }
+
     public static string GetUntrackedFileDiff(string file, string repoRoot)
     {
         var fullPath = Path.Combine(repoRoot, file.Replace('/', Path.DirectorySeparatorChar));

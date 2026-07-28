@@ -13,10 +13,11 @@ revue is a local web-based git diff reviewer written in C# (ASP.NET Core minimal
 
 ```
 src/
-├── Program.cs        # WebApplication setup, all API endpoints, startup helpers
-├── GitHelper.cs      # RunGit(), ResolveDefaultBase(), ParseDiff(), GetUntrackedFiles()
+├── Program.cs        # WebApplication setup, all API endpoints, single-instance hand-off, startup helpers
+├── GitHelper.cs      # RunGit(), FindRepoRoot(), EnsureRevueIgnored(), ResolveDefaultBase(), ParseDiff(), GetUntrackedFiles()
+├── RepoRegistry.cs   # In-memory set of repos this instance serves; Add/Remove/Resolve/List + unique display names
 ├── CommentsStore.cs  # Load/Save for .revue/comments.json
-└── Models.cs         # Comment, Reply, CommentRequest, ReplyRequest, DiffFile records
+└── Models.cs         # Comment, Reply, CommentRequest, ReplyRequest, DiffFile, RepoInfo, AddRepoRequest records
 static/
 ├── index.html        # Entire frontend — layout, styles, JS all in one file
 ├── icon.svg          # App icon (emoji 🎭 on purple gradient, used for favicon + manifest)
@@ -37,10 +38,37 @@ install.cs                # Local dev build + install as Copilot CLI plugin
 
 - **Single static file frontend** — intentional. No npm, no build step. All JS is inline in `index.html`.
 - **Minimal API style** — all routes registered with `app.MapGet/MapPost/MapDelete` in `Program.cs`. No controllers.
+- **Multi-repo, single instance** — one running server reviews several repos; launching `revue <path>` while an instance is already running hands the repo off to it rather than starting a second server. See "Multi-repo & single instance".
 - **Comments are local-only** — saved to `{repoRoot}/.revue/comments.json`, excluded via `.git/info/exclude` (not `.gitignore`).
 - **Port auto-detection** — tries 7878, increments if busy.
 - **Static dir resolution** — `FindStaticDir()` in `Program.cs` checks assembly dir first (for published binaries), then walks up from cwd (for `dotnet run`).
 - **Untracked files** — `git diff` doesn't show untracked files; `GitHelper.GetUntrackedFiles()` + `GetUntrackedFileDiff()` synthesize diff output for them.
+
+## Multi-repo & single instance
+
+One revue instance serves a **set** of repos, not just one. `RepoRegistry`
+(`RepoRegistry.cs`) holds them; `GitHelper` and `CommentsStore` are stateless
+(they take `repoRoot`), so multi-repo just means resolving the target repo per
+request.
+
+- **Repo identity is its git-root path.** Every repo-scoped endpoint takes an
+  optional `?repo=<path>`; an absent/unknown value falls back to the **primary**
+  (first-registered) repo, keeping old single-repo deeplinks and the skill's
+  repo-less reply/delete calls working. Comment mutations by id (`/replies`,
+  `DELETE`) with no `repo` search every store for the id (`FindByCommentId`).
+- **Single-instance hand-off.** A fresh instance writes
+  `%LOCALAPPDATA%/revue/instance.json` (OS cache dir elsewhere) with its
+  port+pid and deletes it on shutdown. A later `revue <path>` reads that file,
+  probes `GET /api/ping` (verifying `app == "revue"` so a stale file can't
+  hijack an unrelated port), `POST /api/repos {path}` to register the repo,
+  opens the browser at `#repo=<path>`, and exits. A dead/stale file self-heals.
+- **Frontend.** `state.repo` (active path) + `state.repos` (the list) drive the
+  topbar repo dropdown. `withRepo(path)` auto-appends `repo=<state.repo>` to
+  every `/api/*` call except the globals (`config`/`ping`/`repos`). `selectRepo`
+  reloads that repo's config, branches, and diff. The poll loop refreshes
+  `/api/repos` so a hand-off from another terminal appears live.
+- **Removing a repo** (× in the dropdown) calls `DELETE /api/repos?path=`; the
+  registry refuses to remove the last one.
 
 ## Theme system
 
@@ -109,6 +137,7 @@ The native `<label class="d2h-file-collapse"><input class="d2h-file-collapse-inp
 ## Frontend state management
 
 - All UI state lives in a global `state` object
+- `state.repo` is the **active repo's git-root path**; `state.repos` is the list this instance serves (`{ path, name, defaultBase }`). Both drive the topbar repo dropdown; `state.repo` is threaded into every repo-scoped API call by `withRepo()` and (when >1 repo) into the URL hash.
 - `state.logBase`/`state.logHead` are the **branch context** (what the topbar selectors show). They survive commit-range overrides so "clear range" / back-navigation restores the underlying branch diff.
 - `state.base`/`state.head` are the **resolved diff endpoints** actually passed to `/api/diff`. When no range is active they mirror `logBase`/`logHead`; when a range is active they're derived from it (single commit → `<hash>^..<hash>`; range → `<older>^..<newer>`; working tree → `HEAD..HEAD`).
 - `state.rangeStart`/`state.rangeEnd` track commit range selection. Stored normalized to `rangeStart = older`, `rangeEnd = newer` so derivation and URL serialization are deterministic.
@@ -123,9 +152,10 @@ The native `<label class="d2h-file-collapse"><input class="d2h-file-collapse-inp
 The `location.hash` carries the **per-review** context so a refresh restores it, browser back/forward steps through review contexts, and copy-pasting the URL is a deeplink. Format:
 
 ```
-#base=<branch>&head=<branch>&range=<older..newer>&file=<encoded-path>
+#repo=<encoded-path>&base=<branch>&head=<branch>&range=<older..newer>&file=<encoded-path>
 ```
 
+- `repo` is the active repo's git-root path, present **only when the instance serves more than one repo** (single-repo deeplinks stay clean and back-compatible). Switching it is a full context switch, so the `hashchange` listener routes a changed `repo` through `selectRepo` (which restores the rest of the context from the same hash).
 - `base`, `head` are the **branch context** (the topbar selectors), never the resolved diff endpoints. Both are always present.
 - `range` is optional; when present it overrides the branch context to scope the diff to a single commit (`<sha>`), a commit range (`<older>..<newer>`, normalized via `state.commits` ordering when written), or working-tree-only changes (`~working~`). Resolved `state.base`/`state.head` are then derived from `range`, leaving the branch context intact for "clear range" / back-navigation.
 - `file` is the currently selected file; sentinels (`revue::commit::<sha>`) and real paths both fit. Restored after `loadFiles()` via `jumpToFile()`.
@@ -171,16 +201,22 @@ For commit-message comments, `file` is the sentinel `revue::commit::<full-sha>`,
 
 All return JSON (camelCase). Errors return `Results.Problem(...)`.
 
-- `GET /api/config` → `{ defaultBase, repoRoot, version, commitHash, latestVersion, updateCommand, currentBranch }`
-- `GET /api/current-branch` → `{ currentBranch }` (cheap, polled to detect `git checkout`)
-- `GET /api/branches` → `string[]`
-- `GET /api/log?base=X&head=Y` → `[{ hash, message }]` (short subject only; for the topbar Commits picker)
-- `GET /api/diff?base=X&head=Y&ignoreWhitespace=bool` → `DiffFile[]` (includes untracked files when head=HEAD, **and** a virtual diff per commit message in `base..head` prepended ahead of the real files when `base != head`; each commit entry has its `commit` field populated with `CommitMeta`)
-- `GET /api/file-diff?base=X&head=Y&file=F&ignoreWhitespace=bool` → `DiffFile`
-- `GET /api/comments` → `Comment[]`
-- `POST /api/comments` → accepts `CommentRequest` (include `author`), returns `Comment`
-- `POST /api/comments/{id}/replies` → accepts `{ author, body }`, returns `Reply`
-- `DELETE /api/comments/{id}` → 200 or 404
+Repo-scoped endpoints take an optional `?repo=<git-root-path>` (default: primary repo).
+
+- `GET /api/ping` → `{ app: "revue", version }` (identifies the port as revue for single-instance hand-off)
+- `GET /api/repos` → `{ repos: [{ path, name, defaultBase }], primary }`
+- `POST /api/repos` → accepts `{ path }`, registers the repo (used by hand-off), returns `RepoInfo`
+- `DELETE /api/repos?path=X` → 200, or Problem if unknown / last remaining repo
+- `GET /api/config?repo=X` → `{ version, commitHash, latestVersion, updateCommand, repos, repo, repoRoot, defaultBase, currentBranch }` (defaultBase/currentBranch/repoRoot are for the resolved repo)
+- `GET /api/current-branch?repo=X` → `{ currentBranch }` (cheap, polled to detect `git checkout`)
+- `GET /api/branches?repo=X` → `string[]`
+- `GET /api/log?repo=Z&base=X&head=Y` → `[{ hash, message }]` (short subject only; for the topbar Commits picker)
+- `GET /api/diff?repo=Z&base=X&head=Y&ignoreWhitespace=bool` → `DiffFile[]` (includes untracked files when head=HEAD, **and** a virtual diff per commit message in `base..head` prepended ahead of the real files when `base != head`; each commit entry has its `commit` field populated with `CommitMeta`)
+- `GET /api/file-diff?repo=Z&base=X&head=Y&file=F&ignoreWhitespace=bool` → `DiffFile`
+- `GET /api/comments?repo=X` → `Comment[]`
+- `POST /api/comments?repo=X` → accepts `CommentRequest` (include `author`), returns `Comment`
+- `POST /api/comments/{id}/replies?repo=X` → accepts `{ author, body }`, returns `Reply` (repo optional: falls back to searching all stores for the id)
+- `DELETE /api/comments/{id}?repo=X` → 200 or 404 (repo optional: searches all stores)
 
 ## Frontend conventions
 
@@ -287,7 +323,7 @@ This gives the user a fully normal Edge window (movable, resizable, F12 DevTools
 
 ## Common tasks for Copilot
 
-- **Add a new API endpoint**: Add a `app.MapGet(...)` call in `Program.cs`, add any new model to `Models.cs`
+- **Add a new API endpoint**: Add a `app.MapGet(...)` call in `Program.cs`, add any new model to `Models.cs`. If it's repo-scoped, take a `string? repo` param and resolve the target with `WithRepo(repo, r => ...)` (or `registry.Resolve(repo)`) rather than closing over a single repo root — `withRepo()` in `index.html` auto-sends the active repo.
 - **Change diff rendering**: Edit the JS in `static/index.html` — look for `diff2html` usage
 - **Change comment storage format**: Edit `CommentsStore.cs` and update `Models.cs`
 - **Add keyboard shortcuts**: Edit the `keydown` handler in `static/index.html`

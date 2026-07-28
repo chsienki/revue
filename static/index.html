@@ -201,6 +201,72 @@
   .topbar-group { display: flex; align-items: baseline; gap: 6px; }
   .topbar-spacer { flex: 1; }
 
+  /* Repo selector */
+  #repo-wrapper { position: relative; display: flex; align-items: baseline; }
+  #repo-btn {
+    background: var(--bg3);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 3px 8px;
+    font-size: 0.875rem;
+    font-family: inherit;
+    line-height: normal;
+    cursor: pointer;
+    max-width: 240px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #repo-btn:hover { border-color: var(--accent); }
+  #repo-current { font-weight: 600; }
+  #repo-panel {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    margin-top: 2px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    z-index: 100;
+    min-width: 240px;
+    max-width: 520px;
+    max-height: 320px;
+    overflow-y: auto;
+    box-shadow: 0 4px 16px #0008;
+  }
+  #repo-panel.open { display: block; }
+  .repo-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.8125rem;
+  }
+  .repo-row:last-child { border-bottom: none; }
+  .repo-row:hover { background: var(--bg3); }
+  .repo-row.active { background: var(--accent2); }
+  .repo-name {
+    flex: 1;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .repo-remove {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 4px;
+    border-radius: var(--radius);
+  }
+  .repo-remove:hover { color: var(--text); background: var(--del); }
+
   /* Commits dropdown */
   #commits-btn {
     background: var(--bg3);
@@ -790,6 +856,10 @@
 
 <div id="topbar">
   <span class="logo-icon">🎭</span><span class="logo">revue</span>
+  <div id="repo-wrapper">
+    <button id="repo-btn"><span id="repo-current">repo</span> ▾</button>
+    <div id="repo-panel"></div>
+  </div>
   <div class="topbar-group">
     <label>base</label>
     <select id="base-sel"></select>
@@ -894,6 +964,8 @@ const API = '';
 let state = {
   base: '',
   head: 'HEAD',
+  repos: [],              // repos this instance is serving (for the selector)
+  repo: '',               // active repo path; threaded into repo-scoped API calls + the URL hash
   files: [],
   comments: [],
   currentFile: null,
@@ -954,6 +1026,9 @@ function parseHashState() {
 
 function buildHashFromState() {
   const parts = [];
+  // Only carry repo in the hash when the instance serves more than one, so
+  // single-repo deeplinks stay clean and back-compatible.
+  if (state.repo && state.repos.length > 1) parts.push(`repo=${encodeURIComponent(state.repo)}`);
   if (state.logBase) parts.push(`base=${encodeURIComponent(state.logBase)}`);
   parts.push(`head=${encodeURIComponent(state.logHead || 'HEAD')}`);
   if (state.rangeStart) {
@@ -1063,14 +1138,23 @@ window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', ()
   if (state.theme === 'auto') applyTheme('auto');
 });
 
+// Repo-scoped API paths carry the active repo so one instance can serve several
+// repos at once. Global endpoints (config / ping / repos) are left untouched.
+function withRepo(path) {
+  if (!state.repo || !path.startsWith('/api/')) return path;
+  if (/^\/api\/(config|ping|repos)(?:[/?]|$)/.test(path)) return path;
+  const sep = path.includes('?') ? '&' : '?';
+  return `${path}${sep}repo=${encodeURIComponent(state.repo)}`;
+}
+
 async function api(path) {
-  const r = await fetch(API + path);
+  const r = await fetch(API + withRepo(path));
   if (!r.ok) throw new Error(`API error ${r.status}: ${await r.text()}`);
   return r.json();
 }
 
 async function apiPost(path, body) {
-  const r = await fetch(API + path, {
+  const r = await fetch(API + withRepo(path), {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(body),
   });
@@ -1080,7 +1164,7 @@ async function apiPost(path, body) {
 }
 
 async function apiDelete(path) {
-  const r = await fetch(API + path, { method: 'DELETE' });
+  const r = await fetch(API + withRepo(path), { method: 'DELETE' });
   if (!r.ok) throw new Error(`API error ${r.status}: ${await r.text()}`);
 }
 
@@ -1153,20 +1237,128 @@ document.getElementById('stale-dismiss').addEventListener('click', () => {
   document.getElementById('stale-banner').classList.remove('active');
 });
 
+// Rebuild the base/head <select> options for the current repo's branches. The
+// change listeners live on the elements and persist across repo switches, so
+// only the option set is refreshed here.
+function populateBranchSelectors(branches) {
+  const baseSel = document.getElementById('base-sel');
+  const headSel = document.getElementById('head-sel');
+  baseSel.innerHTML = '';
+  headSel.innerHTML = '';
+  const refs = [state.logHead, ...branches];
+  refs.forEach(b => {
+    baseSel.add(new Option(b, b, false, b === state.logBase));
+    headSel.add(new Option(b, b, false, b === state.logHead));
+  });
+  // ensure the resolved base ref is selectable even if it's not a local branch
+  if (!refs.includes(state.logBase)) {
+    baseSel.add(new Option(state.logBase, state.logBase, false, true));
+  }
+  baseSel.value = state.logBase;
+  headSel.value = state.logHead;
+}
+
+// Renders the topbar repo dropdown: the active repo's name on the button, and a
+// switch-on-click row per repo with a × to stop reviewing it (hidden when only
+// one repo is registered, since an instance must keep at least one).
+function renderRepoSelector() {
+  const cur = document.getElementById('repo-current');
+  const panel = document.getElementById('repo-panel');
+  const active = state.repos.find(r => r.path === state.repo) || state.repos[0];
+  cur.textContent = active ? active.name : 'repo';
+  cur.title = active ? active.path : '';
+  panel.innerHTML = '';
+  const multi = state.repos.length > 1;
+  state.repos.forEach(r => {
+    const row = document.createElement('div');
+    row.className = 'repo-row' + (r.path === state.repo ? ' active' : '');
+
+    const name = document.createElement('span');
+    name.className = 'repo-name';
+    name.textContent = r.name;
+    name.title = r.path;
+    name.addEventListener('click', () => {
+      panel.classList.remove('open');
+      if (r.path !== state.repo) selectRepo(r.path);
+    });
+    row.appendChild(name);
+
+    if (multi) {
+      const x = document.createElement('button');
+      x.className = 'repo-remove';
+      x.textContent = '×';
+      x.title = 'Stop reviewing this repo';
+      x.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        try { await apiDelete(`/api/repos?path=${encodeURIComponent(r.path)}`); }
+        catch (err) { alert(err.message); return; }
+        const data = await api('/api/repos');
+        state.repos = data.repos;
+        if (r.path === state.repo) {
+          await selectRepo(data.primary || (state.repos[0] && state.repos[0].path));
+        } else {
+          renderRepoSelector();
+          writeHashFromState('replace');
+        }
+      });
+      row.appendChild(x);
+    }
+    panel.appendChild(row);
+  });
+}
+
+// Switches the active repo: reloads that repo's config, branches, and diff.
+// `hash` (optional) restores a review context for the target repo (used by
+// back/forward navigation); otherwise the repo's own default base is used.
+async function selectRepo(path, hash = null) {
+  if (!path || (path === state.repo && !hash)) return;
+  state.repo = path;
+  state.rangeStart = null;
+  state.rangeEnd = null;
+  state.commits = null;
+  state.currentFile = hash ? (hash.file || null) : null;
+
+  const cfg = await api(`/api/config?repo=${encodeURIComponent(path)}`);
+  state.repos = cfg.repos || state.repos;
+  state.repo = cfg.repo || path;
+  state.currentBranch = cfg.currentBranch || null;
+  state.logBase = (hash && hash.base) || cfg.defaultBase;
+  state.logHead = (hash && hash.head) || 'HEAD';
+  state.base = state.logBase;
+  state.head = state.logHead;
+
+  const branches = await api('/api/branches');
+  if (hash) applyHashToState(hash);
+
+  populateBranchSelectors(branches);
+  renderRepoSelector();
+  renderCommitRangeLabel();
+  writeHashFromState(hash ? 'replace' : 'push');
+  await loadFiles();
+}
+
 // ── Init ───────────────────────────────────────────────────────────────────
 
 async function init() {
-  const [branches, cfg] = await Promise.all([api('/api/branches'), api('/api/config')]);
+  // Resolve the active repo from the hash first (the server falls back to the
+  // primary for an unknown/absent repo) so branches + defaults are fetched for
+  // the right repo. One instance can serve several repos; state.repo threads
+  // through every repo-scoped API call and into the URL hash.
+  const initialHash = parseHashState();
+  const cfg = await api(`/api/config${initialHash.repo ? '?repo=' + encodeURIComponent(initialHash.repo) : ''}`);
+  state.repos = cfg.repos || [];
+  state.repo = cfg.repo || (state.repos[0] && state.repos[0].path) || '';
   state.base = cfg.defaultBase;
   state.head = 'HEAD';
   state.logBase = state.base;
   state.logHead = state.head;
   state.currentBranch = cfg.currentBranch || null;
 
+  const branches = await api('/api/branches');
+
   // Hash overrides defaults so a refresh / deeplink restores the exact review
   // context. Done here, before any UI is wired, so the branch selectors below
   // pick up the restored values and loadFiles() runs against them.
-  const initialHash = parseHashState();
   applyHashToState(initialHash);
 
   if (cfg.version) {
@@ -1184,17 +1376,15 @@ async function init() {
 
   const baseSel = document.getElementById('base-sel');
   const headSel = document.getElementById('head-sel');
-  const refs = [state.logHead, ...branches];
-  refs.forEach(b => {
-    baseSel.add(new Option(b, b, false, b === state.logBase));
-    headSel.add(new Option(b, b, false, b === state.logHead));
-  });
-  // ensure default_base is in list
-  if (!refs.includes(state.logBase)) {
-    baseSel.add(new Option(state.logBase, state.logBase, false, true));
-  }
-  baseSel.value = state.logBase;
-  headSel.value = state.logHead;
+  populateBranchSelectors(branches);
+
+  // Repo selector: click a repo to switch, × to stop reviewing it.
+  renderRepoSelector();
+  const repoBtn = document.getElementById('repo-btn');
+  const repoPanel = document.getElementById('repo-panel');
+  repoBtn.addEventListener('click', e => { e.stopPropagation(); repoPanel.classList.toggle('open'); });
+  document.addEventListener('click', () => repoPanel.classList.remove('open'));
+  repoPanel.addEventListener('click', e => e.stopPropagation());
 
   baseSel.addEventListener('change', () => {
     state.base = baseSel.value; state.logBase = baseSel.value;
@@ -1218,6 +1408,13 @@ async function init() {
     _applyingHash = true;
     try {
       const parsed = parseHashState();
+      // A repo change is a full context switch (different branches/diff/
+      // comments), not just a base/head re-derivation, so route it through
+      // selectRepo, which restores the review context from the same hash.
+      if (parsed.repo && parsed.repo !== state.repo && state.repos.some(r => r.path === parsed.repo)) {
+        selectRepo(parsed.repo, parsed);
+        return;
+      }
       const reviewChanged = applyHashToState(parsed);
       // Keep the branch selectors + range label in sync with the restored
       // state. The selectors show the branch context (logBase / logHead), not
@@ -1361,6 +1558,7 @@ function setupFilelistResize() {
 (function startPolling() {
   let lastDiffHash = null;
   let lastCommentsJson = null;
+  let lastReposJson = null;
   let dismissed = false;
 
   // Called by UI actions that modify comments, so polling doesn't flag our own changes
@@ -1383,6 +1581,22 @@ function setupFilelistResize() {
 
   async function poll() {
     try {
+      // Pick up repos added/removed by another `revue <path>` launch so the
+      // selector stays live without a manual refresh.
+      try {
+        const repoData = await api('/api/repos');
+        const reposJson = JSON.stringify(repoData.repos);
+        if (lastReposJson !== null && reposJson !== lastReposJson) {
+          state.repos = repoData.repos;
+          if (!state.repos.some(r => r.path === state.repo)) {
+            await selectRepo(repoData.primary || (state.repos[0] && state.repos[0].path));
+          } else {
+            renderRepoSelector();
+          }
+        }
+        lastReposJson = reposJson;
+      } catch { /* ignore */ }
+
       // Check for current-branch changes (e.g. user ran `git checkout` in another terminal)
       let branchChanged = false;
       try {
