@@ -244,7 +244,10 @@ app.MapGet("/api/log", (string? repo, string? @base, string? head) => WithRepo(r
                          return new { hash = l[..sp], message = l[(sp + 1)..] };
                      }).ToList();
 
-    if (h == "HEAD" && GitHelper.HasWorkingTreeChanges(r.Path))
+    // Surface the working-tree pseudo-commit whenever head points at the current
+    // checkout -- whether spelled "HEAD", the branch name, or HEAD's SHA -- so a
+    // review deep-linked with an explicit head still reaches uncommitted changes.
+    if ((h == "HEAD" || GitHelper.ResolvesToHead(h, r.Path)) && GitHelper.HasWorkingTreeChanges(r.Path))
         commits.Insert(0, new { hash = "~working~", message = "Working tree changes" });
 
     return Results.Json(commits, jsonOpts);

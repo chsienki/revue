@@ -97,6 +97,24 @@ public static class GitHelper
     }
 
     /// <summary>
+    /// True when <paramref name="reference"/> resolves to the same commit as the
+    /// current HEAD. Lets callers treat a head as "the current checkout"
+    /// regardless of spelling -- the literal "HEAD", the checked-out branch
+    /// name, or HEAD's own SHA -- instead of matching the string "HEAD".
+    /// Returns false if either ref fails to resolve.
+    /// </summary>
+    public static bool ResolvesToHead(string reference, string repoRoot)
+    {
+        try
+        {
+            var target = RunGit(["rev-parse", "--verify", $"{reference}^{{commit}}"], repoRoot).Trim();
+            var head = RunGit(["rev-parse", "--verify", "HEAD^{commit}"], repoRoot).Trim();
+            return target.Length > 0 && string.Equals(target, head, StringComparison.Ordinal);
+        }
+        catch { return false; }
+    }
+
+    /// <summary>
     /// For a tracking ref like "upstream/main", checks if the local ref is behind
     /// the remote by comparing local rev to `git ls-remote`. Returns the remote
     /// name and branch, plus how many commits behind, or null if up-to-date/not a remote ref.
