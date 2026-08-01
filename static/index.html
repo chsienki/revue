@@ -712,9 +712,9 @@
   .revue-comment-item.resolved { opacity: 0.45; }
   .revue-replies { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
   .revue-reply { background: var(--bg3); border-radius: var(--radius); padding: 4px 8px; font-size: 0.6875rem; }
-  .revue-reply-input { margin-top: 4px; }
-  .revue-reply-input textarea { width: 100%; background: var(--bg3); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); padding: 4px 6px; font-family: var(--font); font-size: 0.6875rem; resize: vertical; min-height: 40px; }
-  .revue-reply-input textarea:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+  .revue-reply-input, .revue-comment-edit { margin-top: 4px; }
+  .revue-reply-input textarea, .revue-comment-edit textarea { width: 100%; background: var(--bg3); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); padding: 4px 6px; font-family: var(--font); font-size: 0.6875rem; resize: vertical; min-height: 40px; }
+  .revue-reply-input textarea:focus, .revue-comment-edit textarea:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
 
   /* Comment input box */
   .revue-comment-input-wrap {
@@ -977,6 +977,7 @@ let state = {
   showAllBranches: false, // when true, show comments from all branches
   windowSize: 10,         // max files mounted at once (0 = render all)
   windowStart: 0,         // index into state.files for first rendered file
+  collapsedFolders: new Set(),
 };
 
 // ── Utilities ──────────────────────────────────────────────────────────────
@@ -1834,30 +1835,35 @@ function renderFileList() {
   }
   collapse(tree);
 
-  function renderNode(node, container, depth = 0) {
+  function renderNode(node, container, depth = 0, parentPath = '') {
     const indent = 10 + depth * 16;
     // Sort: folders first, then files
     const sortedDirs = Object.keys(node.dirs).sort();
     const sortedFiles = [...node.files].sort((a, b) => a.file.localeCompare(b.file));
 
     sortedDirs.forEach(dirName => {
+      const folderPath = parentPath ? `${parentPath}/${dirName}` : dirName;
+      const collapseKey = `${state.repo}\n${folderPath}`;
+      const collapsed = state.collapsedFolders.has(collapseKey);
       const folderRow = document.createElement('div');
-      folderRow.className = 'folder-row';
+      folderRow.className = 'folder-row' + (collapsed ? ' collapsed' : '');
       folderRow.style.paddingLeft = indent + 'px';
       const childFiles = countFiles(node.dirs[dirName]);
       folderRow.innerHTML = `<span class="folder-arrow">▾</span> ${dirName} <span style="margin-left:auto;font-size:0.625rem;color:var(--text-dim)">${childFiles}</span>`;
 
       const childContainer = document.createElement('div');
-      childContainer.className = 'folder-children';
+      childContainer.className = 'folder-children' + (collapsed ? ' hidden' : '');
 
       folderRow.addEventListener('click', () => {
-        folderRow.classList.toggle('collapsed');
-        childContainer.classList.toggle('hidden');
+        const isCollapsed = folderRow.classList.toggle('collapsed');
+        childContainer.classList.toggle('hidden', isCollapsed);
+        if (isCollapsed) state.collapsedFolders.add(collapseKey);
+        else state.collapsedFolders.delete(collapseKey);
       });
 
       container.appendChild(folderRow);
       container.appendChild(childContainer);
-      renderNode(node.dirs[dirName], childContainer, depth + 1);
+      renderNode(node.dirs[dirName], childContainer, depth + 1, folderPath);
     });
 
     sortedFiles.forEach(f => {
@@ -1892,7 +1898,7 @@ function renderFileList() {
   // If everything is under one root folder, skip it
   const topDirs = Object.keys(tree.dirs);
   if (tree.files.length === 0 && topDirs.length === 1) {
-    renderNode(tree.dirs[topDirs[0]], el);
+    renderNode(tree.dirs[topDirs[0]], el, 0, topDirs[0]);
   } else {
     renderNode(tree, el);
   }
@@ -2262,60 +2268,34 @@ async function renderAllDiffs(opts) {
       byFile[c.file].push(c);
     });
 
-    let html = `<div class="d2h-file-header" style="position:sticky;top:0;z-index:20">
+    section.innerHTML = `<div class="d2h-file-header" style="position:sticky;top:0;z-index:20">
       <span style="font-weight:600">Other comments</span>
       <span style="margin-left:8px;color:var(--text-dim);font-size:0.75rem">${orphaned.length} comment${orphaned.length > 1 ? 's' : ''} not visible in the diff</span>
       <button class="delete-resolved-btn" id="delete-all-orphaned" style="margin-left:auto;font-size:0.75rem">Delete all</button>
-    </div><div class="orphaned-comments-list">`;
+    </div><div class="orphaned-comments-list"></div>`;
 
+    const commentsList = section.querySelector('.orphaned-comments-list');
     for (const [file, comments] of Object.entries(byFile).sort((a, b) => a[0].localeCompare(b[0]))) {
-      const headerLabel = isCommitFile(file)
+      const group = document.createElement('div');
+      group.className = 'orphaned-file-group';
+      const header = document.createElement('div');
+      header.className = 'orphaned-file-header';
+      header.textContent = isCommitFile(file)
         ? `Commit ${file.slice('revue::commit::'.length, 'revue::commit::'.length + 8)} (not in current range)`
-        : escHtml(file);
-      html += `<div class="orphaned-file-group">
-        <div class="orphaned-file-header">${headerLabel}</div>`;
+        : file;
+      group.appendChild(header);
       comments.forEach(c => {
-        const showBadge = c.branch && c.branch !== state.currentBranch;
-        const branchBadge = showBadge ? ` <span class="revue-branch-badge" title="Created on branch ${escHtml(c.branch)}">${escHtml(c.branch)}</span>` : '';
-        html += `<div class="revue-comment-item${c.resolved ? ' resolved' : ''}" data-orphan-id="${c.id}" style="margin:4px 12px">
-          <div class="revue-comment-body">${escHtml(c.body)}${branchBadge}</div>
-          <div class="revue-comment-meta">
-            <span>Line ${c.line}</span>
-            <span>${new Date(c.created).toLocaleString()}</span>
-            <button class="resolve-btn">${c.resolved ? 'Unresolve' : 'Resolve'}</button>
-            <button class="delete-btn">Delete</button>
-          </div>
-        </div>`;
+        renderCommentItem(group, c, file, { orphaned: true });
       });
-      html += '</div>';
+      commentsList.appendChild(group);
     }
-    html += '</div>';
-    section.innerHTML = html;
 
-    // Wire up buttons
     section.querySelector('#delete-all-orphaned').addEventListener('click', async () => {
       if (!confirm(`Delete ${orphaned.length} orphaned comment${orphaned.length > 1 ? 's' : ''}?`)) return;
       await apiPost('/api/comments/delete-batch', orphaned.map(c => c.id));
       await reloadComments();
       renderFileList();
       await renderAllDiffs();
-    });
-    section.querySelectorAll('[data-orphan-id]').forEach(el => {
-      const id = el.dataset.orphanId;
-      const c = orphaned.find(x => x.id === id);
-      if (!c) return;
-      el.querySelector('.resolve-btn').addEventListener('click', async () => {
-        await apiPost('/api/comments', {...c, resolved: !c.resolved});
-        await reloadComments();
-        renderFileList();
-        await renderAllDiffs();
-      });
-      el.querySelector('.delete-btn').addEventListener('click', async () => {
-        await apiDelete(`/api/comments/${id}`);
-        await reloadComments();
-        renderFileList();
-        await renderAllDiffs();
-      });
     });
 
     target.appendChild(section);
@@ -2524,10 +2504,15 @@ function injectComments(file, patch, container) {
   return injectedIds;
 }
 
-function renderCommentItem(container, c, file) {
+function renderCommentItem(container, c, file, { orphaned = false } = {}) {
   const div = document.createElement('div');
   div.className = 'revue-comment-item' + (c.resolved ? ' resolved' : '');
-  div.dataset.id = c.id;
+  if (orphaned) {
+    div.dataset.orphanId = c.id;
+    div.style.margin = '4px 12px';
+  } else {
+    div.dataset.id = c.id;
+  }
 
   const authorLabel = c.author === 'copilot' ? '🤖 Copilot' : `👤 ${c.author || 'user'}`;
   const driftLabel = c._drifted ? ` <span style="color:var(--text-dim);font-style:italic" title="Content moved from original line ${c.line}">↕ moved from line ${c.line}</span>` : '';
@@ -2542,6 +2527,7 @@ function renderCommentItem(container, c, file) {
       <span>Line ${c._displayLine || c.line}${driftLabel}</span>
       <span>${new Date(c.created).toLocaleString()}</span>
       <button class="reply-btn">Reply</button>
+      <button class="edit-btn">Edit</button>
       <button class="resolve-btn">${c.resolved ? 'Unresolve' : 'Resolve'}</button>
       <button class="delete-btn">Delete</button>
     </div>
@@ -2563,6 +2549,39 @@ function renderCommentItem(container, c, file) {
       repliesDiv.appendChild(replyEl);
     });
   }
+
+  div.querySelector('.edit-btn').addEventListener('click', () => {
+    if (div.querySelector('.revue-comment-edit')) return;
+    const bodyDiv = div.querySelector('.revue-comment-body');
+    const editDiv = document.createElement('div');
+    editDiv.className = 'revue-comment-edit';
+    editDiv.innerHTML = `
+      <textarea rows="3"></textarea>
+      <div class="revue-comment-btn-row">
+        <button class="revue-btn secondary cancel-edit-btn">Cancel</button>
+        <button class="revue-btn save-edit-btn">Save</button>
+      </div>
+    `;
+    const textarea = editDiv.querySelector('textarea');
+    textarea.value = c.body;
+    bodyDiv.hidden = true;
+    bodyDiv.after(editDiv);
+    textarea.focus();
+    textarea.select();
+
+    editDiv.querySelector('.cancel-edit-btn').addEventListener('click', () => {
+      editDiv.remove();
+      bodyDiv.hidden = false;
+    });
+    editDiv.querySelector('.save-edit-btn').addEventListener('click', async () => {
+      const body = textarea.value.trim();
+      if (!body) return;
+      await apiPost('/api/comments', {...c, body});
+      await reloadComments();
+      renderFileList();
+      await renderAllDiffs();
+    });
+  });
 
   div.querySelector('.reply-btn').addEventListener('click', () => {
     // Don't add if already has an open reply input
