@@ -16,8 +16,9 @@ src/
 ├── Program.cs        # WebApplication setup, all API endpoints, single-instance hand-off, startup helpers
 ├── GitHelper.cs      # RunGit(), FindRepoRoot(), EnsureRevueIgnored(), ResolveDefaultBase(), ParseDiff(), GetUntrackedFiles()
 ├── RepoRegistry.cs   # In-memory set of repos this instance serves; Add/Remove/Resolve/List + unique display names
+├── AgentRequests.cs  # AgentRequestQueue — per-repo queue + long-poll waiters behind the "Send to Copilot" button
 ├── CommentsStore.cs  # Load/Save for .revue/comments.json
-└── Models.cs         # Comment, Reply, CommentRequest, ReplyRequest, DiffFile, RepoInfo, AddRepoRequest records
+└── Models.cs         # Comment, Reply, CommentRequest, ReplyRequest, DiffFile, RepoInfo, AddRepoRequest, AgentRequest records
 static/
 ├── index.html        # Entire frontend — layout, styles, JS all in one file
 ├── icon.svg          # App icon (emoji 🎭 on purple gradient, used for favicon + manifest)
@@ -125,6 +126,28 @@ Commit messages flow through **the same pipeline as real file diffs** -- they ar
 - `renderAllDiffs()` saves/restores `#diffview` scroll position so comment actions don't jump to top
 - "Orphaned comments" (on files not in current diff) render as a virtual "Other comments" file at the end of the diff view. The orphaned-section header pretty-prints commit-sentinel files as `Commit <short-sha> (not in current range)`.
 - **Commit-message comments** use `file = "revue::commit::<full-sha>"`, `side = "right"`, and `line` indexed into the rendered message (subject = 1, blank separator = 2, body lines = 3+). They are otherwise the same shape as any other comment.
+- **Comment activity applies itself.** The 5s poll re-renders when the comment JSON changes, so a Copilot reply or a comment left in another tab appears on its own. The changes banner is reserved for things that can't be applied safely under the user: files rewritten on disk and branch switches. The one exception is typing — `renderAllDiffs()` re-hydrates an open *new comment* box but not an open edit/reply box, so a refresh arriving while `.revue-comment-edit` / `.revue-reply-input` is on screen sets `state.commentsDirty` and lands when that box closes (`flushLiveComments()`).
+
+## Agent hand-off ("Send to Copilot")
+
+The UI can wake the Copilot session that launched revue, so the user never has to alt-tab
+back to the terminal to say "address my comments".
+
+- **`AgentRequestQueue` (`AgentRequests.cs`)** holds requests per repo, `pending → working → done`.
+  Deliberately in-memory: a request only means anything while both this server and the CLI
+  session that launched it are alive.
+- **The handshake.** The browser `POST`s a request; a session claims it by long-polling
+  `GET /api/agent/wait` (up to 1h). Because the Copilot CLI notifies its agent when a
+  background shell command finishes, a blocking `curl` is an event-driven wake-up that costs
+  nothing while idle. The agent replies to the comments, `POST`s `.../complete` with a
+  one-line summary, and re-arms.
+- **`WaitAsync` honours `HttpContext.RequestAborted`** so an abandoned curl doesn't leave a
+  phantom waiter inflating the "Copilot attached" indicator.
+- **Requests queue before anyone attaches** — clicking Send with no session running leaves a
+  `pending` request that the next launch's waiter claims immediately.
+- **Stuck rounds** (session died mid-work) are cleared by the panel's Cancel button
+  (`DELETE /api/agent/requests/{id}`) rather than a server-side heartbeat.
+- The agent replies but **never resolves** comments; resolving stays the user's call.
 
 ## Viewed (collapse) toggle
 
@@ -143,6 +166,7 @@ The native `<label class="d2h-file-collapse"><input class="d2h-file-collapse-inp
 - `state.rangeStart`/`state.rangeEnd` track commit range selection. Stored normalized to `rangeStart = older`, `rangeEnd = newer` so derivation and URL serialization are deterministic.
 - `state.files` is the **complete** ordered list returned by `/api/diff` -- commit-sentinel files (when `state.showCommitMessages` is true) followed by real files. Treat it as the single source of truth; downstream code (`renderFileList`, `renderAllDiffs`, `computeGloballyInjectableIds`, `commentCountForFile`) handles commits and real files uniformly except where cosmetics differ.
 - `state.currentBranch` is the live git branch (or `null` when detached HEAD); `state.showAllBranches` toggles the branch filter
+- `state.agent` is the last `/api/agent/status` snapshot (`attached`, `waiters`, `pending`, `queued`, `active`, `last`) driving the "Send to Copilot" panel; `state.commentsDirty` defers a live comment refresh while the user is mid-edit. Neither is persisted — both are session state, not review context.
 - Branch selector changes reset both log and diff state plus the range
 - User preferences (`ignoreWhitespace`, `diffLayout`, `showResolved`, `showCommitMessages`, `theme`, `showAllBranches`) are persisted as cookies via `savePref()`/`loadPref()`
 - Per-wrapper state (`wrappedFiles`, `viewedFiles`) is a `Set` persisted as a newline-separated cookie. Both file paths and commit-message sentinels (`revue::commit::<sha>`) coexist in `viewedFiles`.
@@ -217,6 +241,11 @@ Repo-scoped endpoints take an optional `?repo=<git-root-path>` (default: primary
 - `POST /api/comments?repo=X` → accepts `CommentRequest` (include `author`), returns `Comment`
 - `POST /api/comments/{id}/replies?repo=X` → accepts `{ author, body }`, returns `Reply` (repo optional: falls back to searching all stores for the id)
 - `DELETE /api/comments/{id}?repo=X` → 200 or 404 (repo optional: searches all stores)
+- `POST /api/agent/requests?repo=X` → accepts `{ note, commentIds }` (omit `commentIds` for "everything unresolved on this branch"), returns the queued `AgentRequest`
+- `GET /api/agent/wait?repo=X&timeout=N` → long-poll (N clamped to 1–3600s): `{ request, comments, repo, timedOut: false }` once claimed, or `{ timedOut: true, repo }` on expiry. `comments` is the hydrated `Comment[]` so the caller needn't read `comments.json`.
+- `POST /api/agent/requests/{id}/complete` → accepts `{ summary }`, returns the completed `AgentRequest` (no repo param — id is globally unique)
+- `DELETE /api/agent/requests/{id}` → 200 or 404 (drops a stuck round)
+- `GET /api/agent/status?repo=X` → `AgentStatusInfo` `{ attached, waiters, pending, queued, active, last }`
 
 ## Frontend conventions
 
@@ -331,6 +360,7 @@ This gives the user a fully normal Edge window (movable, resizable, F12 DevTools
 - **Add a new theme color**: Add the variable to BOTH `[data-theme="dark"]` and `[data-theme="light"]` in `index.html`
 - **Add a new setting**: Add HTML in `#settings-panel`, wire up in `init()` alongside other settings, persist with `savePref()`/`loadPref()`
 - **Add a new static file**: Add the file to `static/`, add an explicit `app.MapGet()` route in `Program.cs`
+- **Change what Copilot receives from the Send button**: `AgentRequestQueue` in `AgentRequests.cs` for queue semantics, the `/api/agent/wait` handler in `Program.cs` for the payload shape, and `skills/revue/SKILL.md` Capability 3 for what the agent does with it — all three have to agree.
 - **Cut a new release**: Bump version in `VERSION`, `skills/revue/VERSION`, and `plugin.json`, commit, push, tag with `vX.Y.Z`, push the tag
 
 ## What NOT to do
@@ -344,6 +374,8 @@ This gives the user a fully normal Edge window (movable, resizable, F12 DevTools
 - Don't put the loading overlay inside `#diffview-content` — it gets cleared by `innerHTML`
 - Don't put `overflow: hidden` on `.d2h-diff-table` — it breaks sticky line numbers
 - Don't modify `.gitignore` — use `.git/info/exclude` for local ignores
+- Don't put comment activity behind the changes banner — comments apply live; the banner is only for on-disk file changes and branch switches
+- Don't have Copilot resolve comments it addressed — replying is its job, resolving is the user's
 
 ## Ideas backlog
 

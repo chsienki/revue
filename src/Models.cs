@@ -59,3 +59,35 @@ public record CommitInfo(string Hash, string Subject, string Body, string Author
 // Slim metadata attached to DiffFile when the file represents a commit message.
 // Body is intentionally omitted -- it's already encoded into the patch lines.
 public record CommitMeta(string Hash, string Subject, string Author, string Date);
+
+// A request from the browser asking an attached Copilot session to address a set
+// of comments. Status moves pending -> working (a waiter claimed it) -> done.
+public record AgentRequest(
+    string Id,
+    string Repo,
+    string? Branch,
+    string Note,
+    List<string> CommentIds,
+    string Created,
+    string Status,
+    string? Claimed,
+    string? Completed,
+    string? Summary
+);
+
+// Body of POST /api/agent/requests. A null CommentIds means "whatever is
+// unresolved right now", resolved server-side at enqueue time.
+public record AgentRequestBody(string? Note, List<string>? CommentIds);
+
+// Body of POST /api/agent/requests/{id}/complete.
+public record AgentCompleteBody(string? Summary);
+
+// Snapshot of a repo's agent queue for the UI poll.
+public record AgentStatusInfo(
+    bool Attached,
+    int Waiters,
+    int Pending,
+    AgentRequest? Queued,
+    AgentRequest? Active,
+    AgentRequest? Last
+);

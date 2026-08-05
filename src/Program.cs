@@ -51,8 +51,11 @@ var url = $"http://127.0.0.1:{port}";
 var builder = WebApplication.CreateBuilder(args);
 builder.WebHost.UseUrls(url);
 
+// Same-origin only: the UI is served from this very origin, and the agent
+// hand-off endpoints hand free-text straight to a privileged Copilot session,
+// so a page on another origin must not be able to reach them.
 builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
-    p.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
+    p.WithOrigins(url, $"http://localhost:{port}").AllowAnyMethod().AllowAnyHeader()));
 
 var jsonOpts = new JsonSerializerOptions
 {
@@ -62,6 +65,7 @@ var jsonOpts = new JsonSerializerOptions
 
 // ── Repo registry ────────────────────────────────────────────────────────────
 var registry = new RepoRegistry();
+var agentQueue = new AgentRequestQueue();
 try { registry.Add(launchRoot); }
 catch (Exception ex) { Console.Error.WriteLine($"Failed to open {launchRoot}: {ex.Message}"); Environment.Exit(1); return; }
 
@@ -450,6 +454,81 @@ app.MapPost("/api/comments/delete-batch", async (string? repo, HttpRequest req) 
     CommentsStore.Save(r.Path, comments);
     return Results.Ok();
 });
+
+// ── Agent handshake ──────────────────────────────────────────────────────────
+// Lets the browser wake the Copilot session that launched revue: the UI queues a
+// request, the session's long-poll on /api/agent/wait claims it. Requests live
+// only as long as this process, which is the lifetime they're meaningful for.
+
+// POST /api/agent/requests?repo=X — "these comments are ready to address"
+app.MapPost("/api/agent/requests", async (string? repo, HttpRequest req) =>
+{
+    var r = registry.Resolve(repo);
+    if (r is null) return Results.Problem("No repository registered");
+
+    AgentRequestBody? body;
+    try { body = await req.ReadFromJsonAsync<AgentRequestBody>(jsonOpts); }
+    catch { return Results.BadRequest("Invalid JSON"); }
+
+    var branch = GitHelper.GetCurrentBranch(r.Path);
+    var ids = body?.CommentIds;
+    if (ids is null || ids.Count == 0)
+    {
+        // No explicit selection: everything unresolved that applies to this branch.
+        ids = CommentsStore.Load(r.Path)
+            .Where(c => !c.Resolved)
+            .Where(c => branch is null || c.Branch is null || c.Branch == branch)
+            .Select(c => c.Id)
+            .ToList();
+    }
+    if (ids.Count == 0) return Results.BadRequest("No comments to address");
+
+    return Results.Json(agentQueue.Enqueue(r.Path, branch, body?.Note, ids), jsonOpts);
+});
+
+// GET /api/agent/wait?repo=X&timeout=N — long-poll claimed by an attached session
+app.MapGet("/api/agent/wait", async (string? repo, int? timeout, HttpContext ctx) =>
+{
+    var r = registry.Resolve(repo);
+    if (r is null) return Results.Problem("No repository registered");
+
+    var seconds = Math.Clamp(timeout ?? 3600, 1, 3600);
+    AgentRequest? request;
+    try { request = await agentQueue.WaitAsync(r.Path, TimeSpan.FromSeconds(seconds), ctx.RequestAborted); }
+    catch (OperationCanceledException) { return Results.Empty; }
+
+    if (request is null)
+        return Results.Json(new { request = (AgentRequest?)null, timedOut = true, repo = r.Path }, jsonOpts);
+
+    // Hydrate the comments so the session gets file/line/lineContent/body/replies
+    // in one shot rather than re-reading comments.json itself.
+    var byId = CommentsStore.Load(r.Path).ToDictionary(c => c.Id);
+    var comments = request.CommentIds
+        .Where(byId.ContainsKey)
+        .Select(id => byId[id])
+        .ToList();
+
+    return Results.Json(new { request, comments, repo = r.Path, timedOut = false }, jsonOpts);
+});
+
+// POST /api/agent/requests/{id}/complete — session reports a round finished
+app.MapPost("/api/agent/requests/{id}/complete", async (string id, HttpRequest req) =>
+{
+    AgentCompleteBody? body = null;
+    try { if (req.ContentLength > 0) body = await req.ReadFromJsonAsync<AgentCompleteBody>(jsonOpts); }
+    catch { return Results.BadRequest("Invalid JSON"); }
+
+    var done = agentQueue.Complete(id, body?.Summary);
+    return done is null ? Results.NotFound() : Results.Json(done, jsonOpts);
+});
+
+// DELETE /api/agent/requests/{id} — UI escape hatch for a round whose session died
+app.MapDelete("/api/agent/requests/{id}", (string id) =>
+    agentQueue.Cancel(id) ? Results.Ok() : Results.NotFound());
+
+// GET /api/agent/status?repo=X — polled by the UI's agent panel
+app.MapGet("/api/agent/status", (string? repo) => WithRepo(repo, r =>
+    Results.Json(agentQueue.Status(r.Path), jsonOpts)));
 
 // GET /api/ref-status?repo=Z&ref=X — check if a remote-tracking ref is behind its remote
 app.MapGet("/api/ref-status", (string? repo, string @ref) => WithRepo(repo, r =>

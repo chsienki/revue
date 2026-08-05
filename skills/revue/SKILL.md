@@ -55,7 +55,8 @@ Start the revue server for the **current repository** so the user can review dif
 3. What happens next depends on whether revue is already running:
    - **No instance running** → a new server starts (first free port from **7878**), registers this repo, and opens the browser.
    - **An instance is already running** → the launch hands this repo off to the running instance (registering it) and opens the browser focused on it, then the launched process **exits immediately**. It does *not* start a second server. One revue instance serves multiple repos, switchable from the topbar repo dropdown (each with an × to stop reviewing it).
-4. Tell the user the server is running and they can leave inline comments in the browser. Remind them to come back and say "address my revue comments" when they're done.
+4. **Arm the wait** (see Capability 3). This is what lets the user hit **Send to Copilot** in the browser instead of coming back to the terminal, so do it every time you launch.
+5. Tell the user the server is running, they can leave inline comments, and that hitting **🤖 Send N comments to Copilot** in the left panel will bring you back automatically — no need to return to the CLI.
 
 ### Important
 
@@ -195,13 +196,77 @@ Use `curl` or equivalent to post replies. Always use `"author": "copilot"` so th
 
 Since one instance can serve several repos, the reply endpoint locates the comment by its id across every registered repo, so you don't need to tell it which repo the comment belongs to.
 
-After posting all replies, tell the user to check the revue UI for your responses.
+Replies show up in the open revue UI within a few seconds on their own — the user doesn't need to reload anything.
+
+---
+
+## Capability 3: Wait for "Send to Copilot"
+
+The user shouldn't have to alt-tab back to the terminal to say "address my comments".
+The revue UI has a **🤖 Send N comments to Copilot** button; clicking it queues a request
+that you claim by long-polling the server. Because a background shell command finishing
+wakes you up, that click is what brings you back — with your full session context intact.
+
+### Arming the wait
+
+Right after launching revue (Capability 1), start this as an **async background** shell
+command and then carry on / end your turn. Do not run it in the foreground and do not
+wait on it synchronously.
+
+```bash
+curl -sS --max-time 3660 "http://127.0.0.1:7878/api/agent/wait?repo=<url-encoded-repo-root>&timeout=3600"
+```
+
+- Use the port revue actually picked (7878 unless it was busy).
+- On Windows, invoke it as `curl.exe` — in Windows PowerShell `curl` is an alias for
+  `Invoke-WebRequest` and won't understand these flags.
+- `repo` is the git root you launched; the queue is per-repo. If you're reviewing several
+  repos in one instance, arm one waiter per repo.
+- The call blocks for up to an hour and costs nothing while it waits.
+- While it's armed, the UI shows a green **Copilot attached** dot, so the user knows the
+  button will actually reach someone.
+
+### Handling the wake-up
+
+When the background command finishes, look at what it printed:
+
+| Response | What it means | What to do |
+|---|---|---|
+| `{"timedOut":true,...}` | Nobody clicked within the hour. | Silently arm a new waiter. Don't narrate it. |
+| `{"request":{...},"comments":[...]}` | The user hit Send. | Address the round (below). |
+| Empty output / `connection refused` | revue exited. | Don't re-arm. Mention it only if the user is waiting on it. |
+
+For a real request:
+
+1. The payload is self-contained — `comments` holds the full comment objects
+   (file, line, lineContent, body, replies, branch), so you don't need to read
+   `.revue/comments.json`.
+2. `request.note` is free-text the user typed alongside the button. Treat it as extra
+   instruction for this round (e.g. "just answer the questions, don't change code").
+3. Address every comment exactly as in Capability 2: locate code by `lineContent`, read all
+   comments for a file before editing it, make the changes, and post a reply per comment via
+   `POST /api/comments/{id}/replies` with `"author": "copilot"`.
+4. **Do not resolve the comments.** The user resolves them once they've checked the work.
+5. Report the round finished:
+   ```bash
+   curl -sS -X POST "http://127.0.0.1:7878/api/agent/requests/<request-id>/complete" \
+     -H "Content-Type: application/json" \
+     -d '{"summary":"Fixed the null check and answered 2 questions."}'
+   ```
+   The summary shows up under the button, so keep it to one line.
+6. **Arm a new waiter** so the next round works the same way. This is not optional — forget
+   it and the user is silently back to alt-tabbing.
+
+The UI reflects each stage on its own (queued → *Copilot is working…* → the summary), and
+your replies appear in the diff without the user reloading anything.
 
 ---
 
 ## Notes
 
 - Only address **unresolved** comments unless the user asks for resolved ones too
+- **Don't resolve comments yourself** — reply, and leave resolving to the user, who resolves
+  once they've checked the work.
 - **Filter to the current branch**: only consider comments whose `branch` matches the current git branch (`git rev-parse --abbrev-ref HEAD`), or has no `branch` field. Comments from other branches are stale review artifacts left over from when the user was checked out elsewhere.
 - The `.revue/` directory is gitignored — comments are local only
 - Comments are tied to a specific `base`/`head` diff range; mention this context when relevant

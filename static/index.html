@@ -44,6 +44,8 @@
     --info-bg: #0e2a47;
     --info-border: #007acc;
     --info-text: #6cb6ff;
+    --ok: #3fb950;
+    --ok-dim: #2d7a38;
   }
 
   /* Light theme — GitHub-inspired clean white */
@@ -72,6 +74,8 @@
     --info-bg: #ddf4ff;
     --info-border: #0969da;
     --info-text: #0550ae;
+    --ok: #1a7f37;
+    --ok-dim: #7bc98a;
   }
 
   body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 0.8125rem; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
@@ -768,6 +772,20 @@
   .revue-branch-badge { display: inline-block; padding: 1px 7px; margin-left: 6px; font-size: 0.6875rem; font-weight: 500; color: var(--accent); background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; vertical-align: baseline; }
   .orphaned-file-item { border-top: 1px solid var(--border); margin-top: 4px; font-style: italic; }
   .orphaned-wrapper { border: 1px solid var(--border); border-radius: var(--radius); margin-top: 8px; }
+
+  /* Agent panel — "these comments are ready to address" hand-off to Copilot */
+  /* Sticky so the Send button stays reachable under a long file tree. */
+  #agent-panel { position: sticky; bottom: 0; z-index: 6; margin-top: auto; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; border-top: 1px solid var(--border); background: var(--bg2); }
+  #agent-status { display: flex; align-items: center; gap: 6px; font-size: 0.75rem; color: var(--text-dim); }
+  #agent-status .agent-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); flex-shrink: 0; }
+  #agent-status.attached .agent-dot { background: var(--ok); box-shadow: 0 0 0 2px color-mix(in srgb, var(--ok) 25%, transparent); }
+  #agent-status.working .agent-dot { background: var(--accent); animation: agent-pulse 1.2s ease-in-out infinite; }
+  @keyframes agent-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+  #agent-note { width: 100%; box-sizing: border-box; resize: vertical; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); padding: 4px 6px; font-family: inherit; font-size: 0.75rem; }
+  #agent-send { width: 100%; padding: 6px 10px; }
+  #agent-send:disabled { opacity: 0.5; cursor: default; }
+  #agent-cancel { width: 100%; padding: 6px 10px; }
+  #agent-hint { font-size: 0.6875rem; color: var(--text-dim); font-style: italic; }
   .orphaned-comments-list { padding: 8px 0; }
   .orphaned-file-group { margin-bottom: 8px; }
   .orphaned-file-header { font-family: var(--mono); font-size: 0.75rem; color: var(--accent); padding: 4px 12px; font-weight: 600; }
@@ -949,6 +967,13 @@
       <label for="show-all-branches">Show all branches</label>
       <span id="other-branches-count" class="other-branches-count"></span>
     </div>
+    <div id="agent-panel">
+      <div id="agent-status"><span class="agent-dot"></span><span id="agent-status-text">Copilot</span></div>
+      <textarea id="agent-note" rows="2" placeholder="Optional: extra instructions for Copilot…"></textarea>
+      <button id="agent-send" class="revue-btn">🤖 Send comments to Copilot</button>
+      <button id="agent-cancel" class="revue-btn secondary" style="display:none">Cancel request</button>
+      <div id="agent-hint"></div>
+    </div>
     <div id="filelist-resize"></div>
   </div>
   <div id="diffview">
@@ -978,6 +1003,8 @@ let state = {
   windowSize: 10,         // max files mounted at once (0 = render all)
   windowStart: 0,         // index into state.files for first rendered file
   collapsedFolders: new Set(),
+  agent: { attached: false, waiters: 0, pending: 0, active: null, last: null },
+  commentsDirty: false,   // live comment refresh deferred while an edit/reply box is open
 };
 
 // ── Utilities ──────────────────────────────────────────────────────────────
@@ -1173,6 +1200,32 @@ async function reloadComments() {
   state.comments = await api('/api/comments');
   if (window.resetCommentsBaseline) window.resetCommentsBaseline();
   updateOtherBranchesUI();
+  renderAgentPanel();
+}
+
+// ── Live comments ──────────────────────────────────────────────────────────
+//
+// Comment activity (a reply from Copilot, a comment left in another tab) lands
+// in the diff on its own rather than behind a "click to reload" banner. The one
+// thing that must not be interrupted is typing: renderAllDiffs() re-hydrates an
+// open *new comment* box but not an open edit / reply box, so a refresh that
+// arrives while one of those is on screen is deferred until it closes.
+
+function commentEditorOpen() {
+  return !!document.querySelector('.revue-comment-edit, .revue-reply-input');
+}
+
+async function applyLiveComments() {
+  if (commentEditorOpen()) { state.commentsDirty = true; return; }
+  state.commentsDirty = false;
+  updateOtherBranchesUI();
+  renderFileList();
+  await renderAllDiffs();
+}
+
+// Called when an edit / reply box closes, to land anything that arrived meanwhile.
+function flushLiveComments() {
+  if (state.commentsDirty) applyLiveComments();
 }
 
 // Comment is visible (branch-wise) when:
@@ -1199,6 +1252,115 @@ function updateOtherBranchesUI() {
   if (otherCount === 0 && !state.showAllBranches) { wrap.style.display = 'none'; return; }
   wrap.style.display = '';
   countEl.textContent = otherCount > 0 ? `${otherCount} on other branches` : '';
+}
+
+// ── Agent hand-off ─────────────────────────────────────────────────────────
+//
+// "These comments are ready to address": the browser queues a request that the
+// Copilot session which launched revue claims via a long-poll on
+// /api/agent/wait. That session may not exist (revue started by hand) or may be
+// busy, so the panel always reports what it knows: attached / working / done.
+
+// The comments a Send would cover: unresolved and visible under the branch filter.
+function agentCandidateComments() {
+  return state.comments.filter(c => !c.resolved).filter(branchVisible);
+}
+
+function renderAgentPanel() {
+  const statusEl = document.getElementById('agent-status');
+  const textEl = document.getElementById('agent-status-text');
+  const sendBtn = document.getElementById('agent-send');
+  const cancelBtn = document.getElementById('agent-cancel');
+  const hintEl = document.getElementById('agent-hint');
+  const noteEl = document.getElementById('agent-note');
+  if (!statusEl || !sendBtn) return;
+
+  const a = state.agent || {};
+  const count = agentCandidateComments().length;
+  const inFlight = a.active || (a.pending > 0);
+
+  statusEl.classList.toggle('attached', !!a.attached && !a.active);
+  statusEl.classList.toggle('working', !!a.active);
+
+  sendBtn.style.display = inFlight ? 'none' : '';
+  cancelBtn.style.display = inFlight ? '' : 'none';
+  noteEl.disabled = !!inFlight;
+
+  if (a.active) {
+    textEl.textContent = 'Copilot is working…';
+    hintEl.textContent = a.active.note ? `Note: ${a.active.note}` : `${a.active.commentIds.length} comment${a.active.commentIds.length === 1 ? '' : 's'} sent`;
+    return;
+  }
+  if (a.pending > 0) {
+    textEl.textContent = 'Queued for Copilot';
+    hintEl.textContent = a.attached ? 'Picking it up…' : 'Waiting for a Copilot session to attach.';
+    return;
+  }
+
+  textEl.textContent = a.attached ? 'Copilot attached' : 'No Copilot session attached';
+  sendBtn.disabled = count === 0;
+  sendBtn.textContent = count === 0
+    ? '🤖 No comments to send'
+    : `🤖 Send ${count} comment${count === 1 ? '' : 's'} to Copilot`;
+
+  if (a.last && a.last.completed) {
+    hintEl.textContent = a.last.summary
+      ? `✓ ${a.last.summary}`
+      : '✓ Copilot finished the last round.';
+  } else if (!a.attached) {
+    hintEl.textContent = 'Requests queue until a Copilot session attaches.';
+  } else {
+    hintEl.textContent = '';
+  }
+}
+
+async function refreshAgentStatus() {
+  try {
+    const status = await api('/api/agent/status');
+    const wasWorking = !!(state.agent && state.agent.active);
+    state.agent = status;
+    // A finished round means new replies are already on disk; pull them in now
+    // rather than waiting for the next comment poll tick.
+    if (wasWorking && !status.active) await reloadCommentsLive();
+    renderAgentPanel();
+  } catch { /* best-effort */ }
+}
+
+async function reloadCommentsLive() {
+  try {
+    state.comments = await api('/api/comments');
+    if (window.resetCommentsBaseline) window.resetCommentsBaseline();
+    await applyLiveComments();
+  } catch { /* best-effort */ }
+}
+
+async function sendToAgent() {
+  const sendBtn = document.getElementById('agent-send');
+  const noteEl = document.getElementById('agent-note');
+  const ids = agentCandidateComments().map(c => c.id);
+  if (!ids.length) return;
+  sendBtn.disabled = true;
+  try {
+    const request = await apiPost('/api/agent/requests', { note: noteEl.value.trim(), commentIds: ids });
+    noteEl.value = '';
+    state.agent = { ...state.agent, pending: (state.agent.pending || 0) + 1, queued: request, last: null };
+    renderAgentPanel();
+    // The waiter claims it within milliseconds; check back rather than waiting 5s.
+    setTimeout(refreshAgentStatus, 400);
+    return request;
+  } catch (e) {
+    document.getElementById('agent-hint').textContent = `Failed to send: ${e.message}`;
+    sendBtn.disabled = false;
+  }
+}
+
+async function cancelAgentRequest() {
+  const a = state.agent || {};
+  const id = (a.active && a.active.id) || (a.queued && a.queued.id);
+  if (!id) { await refreshAgentStatus(); return; }
+  try { await apiDelete(`/api/agent/requests/${id}`); }
+  catch { /* fall through to a status refresh */ }
+  await refreshAgentStatus();
 }
 
 // ── Stale ref detection ───────────────────────────────────────────────────
@@ -1336,6 +1498,9 @@ async function selectRepo(path, hash = null) {
   renderCommitRangeLabel();
   writeHashFromState(hash ? 'replace' : 'push');
   await loadFiles();
+  // The agent queue is per-repo, so the panel has to follow the switch.
+  state.agent = { attached: false, waiters: 0, pending: 0, active: null, last: null };
+  await refreshAgentStatus();
 }
 
 // ── Init ───────────────────────────────────────────────────────────────────
@@ -1453,9 +1618,15 @@ async function init() {
     updateOtherBranchesUI();
     renderFileList();
     renderAllDiffs();
+    renderAgentPanel();
   }
   document.getElementById('show-all-branches').addEventListener('change', e => applyBranchFilterChange(e.target.checked));
   document.getElementById('setting-all-branches').addEventListener('change', e => applyBranchFilterChange(e.target.checked));
+
+  document.getElementById('agent-send').addEventListener('click', sendToAgent);
+  document.getElementById('agent-cancel').addEventListener('click', cancelAgentRequest);
+  renderAgentPanel();
+  refreshAgentStatus();
 
   document.getElementById('delete-resolved').addEventListener('click', async () => {
     const resolved = state.comments.filter(c => c.resolved);
@@ -1615,28 +1786,34 @@ function setupFilelistResize() {
       const commentsChanged = lastCommentsJson !== null && commentsJson !== lastCommentsJson;
       lastCommentsJson = commentsJson;
 
-      // If comments changed, update state silently so next render picks them up
       if (commentsChanged) state.comments = comments;
 
-      // If branch changed, re-render to apply the new branch filter (and refresh the visible-count UI)
+      // Branch changes need a full re-render for the new branch filter; comment
+      // changes apply themselves (deferred if the user is mid-edit) so replies
+      // land without a reload step.
       if (branchChanged) {
+        state.commentsDirty = false;
         updateOtherBranchesUI();
         renderFileList();
         renderAllDiffs();
-      } else if (commentsChanged) {
-        updateOtherBranchesUI();
+      } else if (commentsChanged || state.commentsDirty) {
+        await applyLiveComments();
       }
+      if (branchChanged || commentsChanged) renderAgentPanel();
+
+      // Refresh the agent hand-off panel (attached / working / finished)
+      await refreshAgentStatus();
 
       // Check for file/diff changes
       const { hash } = await api(`/api/changes-hash?base=${encodeURIComponent(state.base)}&head=${encodeURIComponent(state.head)}`);
       const diffChanged = lastDiffHash !== null && hash !== lastDiffHash;
       lastDiffHash = hash;
 
-      // Show banner if something changed
-      if (!dismissed && (commentsChanged || diffChanged || branchChanged)) {
+      // Banner is only for changes we can't safely apply under the user: files
+      // rewritten on disk, or a checkout that moved the review out from under them.
+      if (!dismissed && (diffChanged || branchChanged)) {
         const parts = [];
         if (diffChanged) parts.push('Files changed on disk');
-        if (commentsChanged) parts.push('New comment activity');
         if (branchChanged) parts.push(`Branch changed to "${state.currentBranch || 'detached HEAD'}"`);
         msg.textContent = parts.join(' · ');
         banner.classList.add('active');
@@ -2140,6 +2317,9 @@ async function jumpToFile(file) {
 }
 
 async function renderAllDiffs(opts) {
+  // A full re-render always reflects the current comment set, so anything the
+  // live-comment path was holding back is satisfied by getting here.
+  state.commentsDirty = false;
   const skipPin = opts && opts.skipPin;
   const scrollEl = document.getElementById('diffview');
   const pin = skipPin ? null : captureScrollPin();
@@ -2572,6 +2752,7 @@ function renderCommentItem(container, c, file, { orphaned = false } = {}) {
     editDiv.querySelector('.cancel-edit-btn').addEventListener('click', () => {
       editDiv.remove();
       bodyDiv.hidden = false;
+      flushLiveComments();
     });
     editDiv.querySelector('.save-edit-btn').addEventListener('click', async () => {
       const body = textarea.value.trim();
@@ -2597,7 +2778,7 @@ function renderCommentItem(container, c, file, { orphaned = false } = {}) {
     `;
     repliesDiv.appendChild(inputDiv);
     inputDiv.querySelector('textarea').focus();
-    inputDiv.querySelector('.cancel-reply-btn').addEventListener('click', () => inputDiv.remove());
+    inputDiv.querySelector('.cancel-reply-btn').addEventListener('click', () => { inputDiv.remove(); flushLiveComments(); });
     inputDiv.querySelector('.save-reply-btn').addEventListener('click', async () => {
       const body = inputDiv.querySelector('textarea').value.trim();
       if (!body) return;
