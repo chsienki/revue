@@ -52,9 +52,10 @@ Start the revue server for the **current repository** so the user can review dif
    ```
    - `<current-repo-root>` is the git root of whatever repo the user is currently working in (use `git rev-parse --show-toplevel` to find it).
    - If the user is already in the revue repo itself, omit the trailing argument — it defaults to the current directory.
-3. What happens next depends on whether revue is already running:
+3. What happens next depends on the version already running:
    - **No instance running** → a new server starts (first free port from **7878**), registers this repo, and opens the browser.
-   - **An instance is already running** → the launch hands this repo off to the running instance (registering it) and opens the browser focused on it, then the launched process **exits immediately**. It does *not* start a second server. One revue instance serves multiple repos, switchable from the topbar repo dropdown (each with an × to stop reviewing it).
+   - **Same or newer version running** → the launch hands this repo off to it (registering it) and opens the browser focused on it, then the launched process **exits immediately**. It does *not* start a second server. One revue instance serves multiple repos, switchable from the topbar repo dropdown (each with an × to stop reviewing it).
+   - **This binary is newer** → it takes over instead: it inherits the running instance's repos, asks it to quit, and rebinds the same port. This is how an update applies itself, so a freshly installed revue never sits behind an old running one. Open tabs reload themselves and attached sessions are told to reconnect.
 4. **Arm the wait** (see Capability 3). This is what lets the user hit **Send to Copilot** in the browser instead of coming back to the terminal, so do it every time you launch.
 5. Tell the user the server is running, they can leave inline comments, and that hitting **🤖 Send N comments to Copilot** in the left panel will bring you back automatically — no need to return to the CLI.
 
@@ -62,7 +63,7 @@ Start the revue server for the **current repository** so the user can review dif
 
 - **Do NOT use npx, npm, pip, or any package manager to find or run revue.**
 - The bootstrap script handles downloading the correct platform-specific binary automatically.
-- Start it as a **detached** background process. A fresh instance stays alive until the user stops it, so don't wait for it to exit. If revue was already running, the launched process instead hands the repo off and exits right away — that quick exit is expected, not a failure.
+- Start it as a **detached** background process. A fresh instance stays alive until the user stops it, so don't wait for it to exit. If revue was already running at the same or a newer version, the launched process instead hands the repo off and exits right away — that quick exit is expected, not a failure.
 
 ### Open against the right base branch
 
@@ -234,7 +235,8 @@ When the background command finishes, look at what it printed:
 |---|---|---|
 | `{"timedOut":true,...}` | Nobody clicked within the hour. | Silently arm a new waiter. Don't narrate it. |
 | `{"request":{...},"comments":[...]}` | The user hit Send. | Address the round (below). |
-| Empty output / `connection refused` | revue exited. | Don't re-arm. Mention it only if the user is waiting on it. |
+| `{"restarting":true,"port":N}` | revue is switching to a newly installed version. | Wait for `GET /api/ping` on that port to answer again (poll ~1s apart for up to 30s), then arm a new waiter. Not an exit. |
+| Empty output / `connection refused` | Either revue exited, or a restart dropped the socket before it could answer. | Ping `/api/ping` a few times over ~10s. If it answers, arm a new waiter; if not, revue is gone — don't re-arm, and mention it only if the user is waiting on it. |
 
 For a real request:
 

@@ -127,6 +127,18 @@
   }
   #update-banner.active { display: flex; }
   #update-banner .update-msg { flex: 1; }
+  #update-banner #update-restart-btn {
+    background: var(--info-border);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius);
+    padding: 3px 10px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 0.8125rem;
+  }
+  #update-banner #update-restart-btn:hover { opacity: 0.85; }
+  #update-banner #update-restart-btn:disabled { opacity: 0.6; cursor: default; }
   #update-banner code {
     background: var(--info-border);
     color: #fff;
@@ -943,6 +955,7 @@
 <div id="update-banner">
   <span>🔄</span>
   <span class="update-msg" id="update-msg"></span>
+  <button id="update-restart-btn">Restart now</button>
   <button class="dismiss-btn" id="update-dismiss" title="Dismiss">✕</button>
 </div>
 
@@ -1005,6 +1018,8 @@ let state = {
   collapsedFolders: new Set(),
   agent: { attached: false, waiters: 0, pending: 0, active: null, last: null },
   commentsDirty: false,   // live comment refresh deferred while an edit/reply box is open
+  version: null,          // version of the server this page is talking to
+  restarting: false,      // a restart is in flight; the page reloads when it lands
 };
 
 // ── Utilities ──────────────────────────────────────────────────────────────
@@ -1363,6 +1378,108 @@ async function cancelAgentRequest() {
   await refreshAgentStatus();
 }
 
+// ── Update banner & restart ────────────────────────────────────────────────
+//
+// A newer revue can be installed while this one runs. `updateReady` means it's
+// on this machine and can be switched to right here (downloading it first when
+// the plugin pins a version whose binary hasn't landed yet); `latestVersion`
+// only means GitHub has something newer, which still needs a plugin update.
+// Switching always waits for a click -- pulling the server out from under a
+// review in progress is worse than running a version behind.
+
+let _updateDismissed = false;
+
+function renderUpdateBanner(info) {
+  const banner = document.getElementById('update-banner');
+  const msg = document.getElementById('update-msg');
+  const btn = document.getElementById('update-restart-btn');
+  if (!banner || _updateDismissed || state.restarting) return;
+
+  const ready = info && info.updateReady;
+  if (ready) {
+    msg.innerHTML = `revue <b>${ready.version}</b> is installed (running ${info.version}).`;
+    btn.textContent = ready.needsDownload ? 'Download & restart' : 'Restart now';
+    btn.disabled = false;
+    btn.style.display = '';
+    banner.classList.add('active');
+  } else if (info && info.latestVersion && info.updateCommand) {
+    msg.innerHTML = `revue <b>${info.latestVersion}</b> is available (running ${info.version}). Run <code>${info.updateCommand}</code>.`;
+    btn.style.display = 'none';
+    banner.classList.add('active');
+  } else {
+    banner.classList.remove('active');
+  }
+}
+
+async function requestRestart() {
+  const msg = document.getElementById('update-msg');
+  const btn = document.getElementById('update-restart-btn');
+  const downloading = btn.textContent.startsWith('Download');
+  btn.disabled = true;
+  msg.textContent = downloading ? 'Downloading…' : 'Restarting…';
+  try {
+    const r = await fetch(API + '/api/restart', { method: 'POST' });
+    if (!r.ok) {
+      let detail = await r.text();
+      try { detail = JSON.parse(detail).detail || detail; } catch { /* not problem+json */ }
+      throw new Error(detail);
+    }
+    const body = await r.json();
+    watchForRestart(body && body.version);
+  } catch (e) {
+    msg.textContent = `Restart failed: ${e.message}`;
+    btn.disabled = false;
+  }
+}
+
+// Waits for the replacement to answer on the same port, then reloads so the tab
+// picks up the new frontend. Also covers a server restarted by any other means,
+// which is why a plain reconnect after downtime counts even when the version is
+// unchanged. A null expectedVersion means we only suspect a restart, so a server
+// that turns out to be healthy cancels the watch rather than stranding the page.
+function watchForRestart(expectedVersion) {
+  if (state.restarting) return;
+  state.restarting = true;
+
+  const speculative = !expectedVersion;
+  const banner = document.getElementById('update-banner');
+  const msg = document.getElementById('update-msg');
+  document.getElementById('update-restart-btn').style.display = 'none';
+  msg.textContent = 'Restarting revue…';
+  banner.classList.add('active');
+
+  const started = Date.now();
+  let sawDown = false;
+
+  const cancel = () => {
+    state.restarting = false;
+    banner.classList.remove('active');
+  };
+
+  const tick = async () => {
+    if (Date.now() - started > 120000) {
+      msg.textContent = 'revue did not come back — start it again from your terminal.';
+      state.restarting = false;
+      return;
+    }
+    try {
+      const r = await fetch(API + '/api/ping', { cache: 'no-store' });
+      if (r.ok) {
+        const p = await r.json();
+        const changed = expectedVersion ? p.version === expectedVersion : p.version !== state.version;
+        if (p.app === 'revue' && (changed || sawDown)) { location.reload(); return; }
+        if (speculative) { cancel(); return; }
+      } else {
+        sawDown = true;
+      }
+    } catch {
+      sawDown = true;
+    }
+    setTimeout(tick, 1000);
+  };
+  setTimeout(tick, 1000);
+}
+
 // ── Stale ref detection ───────────────────────────────────────────────────
 
 async function checkBaseRefStatus() {
@@ -1519,6 +1636,7 @@ async function init() {
   state.logBase = state.base;
   state.logHead = state.head;
   state.currentBranch = cfg.currentBranch || null;
+  state.version = cfg.version || null;
 
   const branches = await api('/api/branches');
 
@@ -1532,13 +1650,12 @@ async function init() {
     document.getElementById('version-label').textContent = `v${cfg.version}${hash}`;
   }
 
-  if (cfg.latestVersion && cfg.updateCommand) {
-    const updateBanner = document.getElementById('update-banner');
-    document.getElementById('update-msg').innerHTML =
-      `revue <b>${cfg.latestVersion}</b> is available (current: ${cfg.version}). Run <code>${cfg.updateCommand}</code> then restart.`;
-    updateBanner.classList.add('active');
-    document.getElementById('update-dismiss').addEventListener('click', () => updateBanner.classList.remove('active'));
-  }
+  renderUpdateBanner(cfg);
+  document.getElementById('update-restart-btn').addEventListener('click', requestRestart);
+  document.getElementById('update-dismiss').addEventListener('click', () => {
+    _updateDismissed = true;
+    document.getElementById('update-banner').classList.remove('active');
+  });
 
   const baseSel = document.getElementById('base-sel');
   const headSel = document.getElementById('head-sel');
@@ -1732,6 +1849,7 @@ function setupFilelistResize() {
   let lastCommentsJson = null;
   let lastReposJson = null;
   let dismissed = false;
+  let pollFailures = 0;
 
   // Called by UI actions that modify comments, so polling doesn't flag our own changes
   window.resetCommentsBaseline = () => {
@@ -1752,6 +1870,7 @@ function setupFilelistResize() {
   });
 
   async function poll() {
+    if (state.restarting) return;
     try {
       // Pick up repos added/removed by another `revue <path>` launch so the
       // selector stays live without a manual refresh.
@@ -1818,7 +1937,30 @@ function setupFilelistResize() {
         msg.textContent = parts.join(' · ');
         banner.classList.add('active');
       }
-    } catch { /* ignore polling errors */ }
+
+      // A restart can be quick enough that no poll ever fails, so trust the
+      // reported version rather than an observed outage: a different server on
+      // the same port means this page's frontend is stale.
+      try {
+        const status = await api('/api/update-status');
+        if (state.version && status.version && status.version !== state.version) {
+          location.reload();
+          return;
+        }
+        renderUpdateBanner(status);
+      } catch { /* best-effort */ }
+
+      pollFailures = 0;
+    } catch (e) {
+      // Only a transport failure means the server went away. An endpoint
+      // returning an error -- a transient git failure during a rebase, say --
+      // says nothing about whether revue is still there.
+      if (e instanceof TypeError) {
+        if (++pollFailures >= 2) watchForRestart(null);
+      } else {
+        pollFailures = 0;
+      }
+    }
   }
 
   // Initialize baselines without showing banner

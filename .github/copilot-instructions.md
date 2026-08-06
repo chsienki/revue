@@ -17,6 +17,7 @@ src/
 ├── GitHelper.cs      # RunGit(), FindRepoRoot(), EnsureRevueIgnored(), ResolveDefaultBase(), ParseDiff(), GetUntrackedFiles()
 ├── RepoRegistry.cs   # In-memory set of repos this instance serves; Add/Remove/Resolve/List + unique display names
 ├── AgentRequests.cs  # AgentRequestQueue — per-repo queue + long-poll waiters behind the "Send to Copilot" button
+├── InstalledVersions.cs # Finds newer revue versions on this machine (plugin pin, bootstrap cache, dev bundle)
 ├── CommentsStore.cs  # Load/Save for .revue/comments.json
 └── Models.cs         # Comment, Reply, CommentRequest, ReplyRequest, DiffFile, RepoInfo, AddRepoRequest, AgentRequest records
 static/
@@ -59,10 +60,24 @@ request.
   `DELETE`) with no `repo` search every store for the id (`FindByCommentId`).
 - **Single-instance hand-off.** A fresh instance writes
   `%LOCALAPPDATA%/revue/instance.json` (OS cache dir elsewhere) with its
-  port+pid and deletes it on shutdown. A later `revue <path>` reads that file,
-  probes `GET /api/ping` (verifying `app == "revue"` so a stale file can't
-  hijack an unrelated port), `POST /api/repos {path}` to register the repo,
-  opens the browser at `#repo=<path>`, and exits. A dead/stale file self-heals.
+  port+pid and deletes it on shutdown -- only when both still match, so a dying
+  instance can't delete the file its replacement just wrote for the same port. A
+  later `revue <path>` reads that file, probes `GET /api/ping` (verifying
+  `app == "revue"` so a stale file can't hijack an unrelated port), `POST
+  /api/repos {path}` to register the repo, opens the browser at `#repo=<path>`,
+  and exits. A dead/stale file self-heals.
+- **Newer wins.** The hand-off compares `/api/ping`'s version with its own. Same
+  or older hands off as above (an old terminal can never downgrade a running
+  instance). Newer **takes over**: it inherits the repo set via `GET /api/repos`,
+  `POST /api/shutdown`s the old instance, waits for that pid to exit and the port
+  to free, then binds the same port. That's what makes installing an update
+  actually apply -- otherwise the hand-off would keep the stale server alive
+  forever. See "Restarting into a new version".
+- **Args.** Every positional arg is a repo to serve (`revue <p1> <p2> …`), which
+  is how a replacement inherits the set. `--takeover <pid> --port <n>` marks a
+  process spawned as a replacement: it skips the hand-off probe entirely, waits
+  for that pid, reuses that port, and doesn't open a browser (the tabs that are
+  already open reload themselves).
 - **Frontend.** `state.repo` (active path) + `state.repos` (the list) drive the
   topbar repo dropdown. `withRepo(path)` auto-appends `repo=<state.repo>` to
   every `/api/*` call except the globals (`config`/`ping`/`repos`). `selectRepo`
@@ -149,6 +164,41 @@ back to the terminal to say "address my comments".
   (`DELETE /api/agent/requests/{id}`) rather than a server-side heartbeat.
 - The agent replies but **never resolves** comments; resolving stays the user's call.
 
+## Restarting into a new version
+
+`copilot plugin update` only refreshes skill files -- the binary lands later, when
+something runs bootstrap. So a running revue watches for a newer version itself
+(`InstalledVersions.cs`, rescanned every 60s) and offers to switch, which means
+the user never has to hunt down the process.
+
+- **Three sources, in one ranking.** The plugin's pinned `VERSION`
+  (`$COPILOT_HOME/installed-plugins/*/revue/**/VERSION`), the bootstrap cache
+  (`<base>/<version>/revue[.exe]`, version = directory name), and the dev-install
+  bundle (`<plugin>/skills/revue/revue[.exe]` + adjacent `VERSION`). Highest
+  version above the running one wins, preferring a ready binary over a pin of the
+  same version. The cache base is found from the running exe's own grandparent
+  first, so it works regardless of platform path conventions.
+- **`updateReady` vs `latestVersion`.** `updateReady` means "on this machine,
+  switchable right here" (`needsDownload` when only the pin exists);
+  `latestVersion` means "published on GitHub", which still needs a plugin update.
+  Both come from `/api/config` and `/api/update-status`.
+- **Applying always takes a click.** Nothing restarts on its own -- pulling the
+  server out from under a review in progress is worse than running a version behind.
+- **`POST /api/restart`** runs the plugin's own bootstrap script first when the
+  version is only pinned (so RID detection, caching and old-version cleanup stay
+  in one place), spawns `<newExe> --takeover <pid> --port <n> <repos…>`, then
+  shuts down. It never re-execs itself, so it works the same from `dotnet run` as
+  from a released binary.
+- **`BeginShutdown` is the single exit path** for both `/api/shutdown` and
+  `/api/restart`: `AgentRequestQueue.SignalShutdown()` releases every long-poll
+  with `{ restarting: true, port }` so attached Copilot sessions reconnect instead
+  of concluding revue died, then the app stops after a short flush delay.
+- **The frontend reloads itself.** The poll compares the server's reported version
+  with `state.version` every tick and reloads on a change -- a restart can be fast
+  enough that no request ever fails, so an observed outage is not a reliable
+  signal. `watchForRestart()` additionally covers the case where the server does
+  stay down for a moment.
+
 ## Viewed (collapse) toggle
 
 The native `<label class="d2h-file-collapse"><input class="d2h-file-collapse-input">Viewed</label>` markup that diff2html embeds in every `.d2h-file-header` is the single "viewed" control for both file diffs and commit messages. We don't add a custom widget:
@@ -167,6 +217,7 @@ The native `<label class="d2h-file-collapse"><input class="d2h-file-collapse-inp
 - `state.files` is the **complete** ordered list returned by `/api/diff` -- commit-sentinel files (when `state.showCommitMessages` is true) followed by real files. Treat it as the single source of truth; downstream code (`renderFileList`, `renderAllDiffs`, `computeGloballyInjectableIds`, `commentCountForFile`) handles commits and real files uniformly except where cosmetics differ.
 - `state.currentBranch` is the live git branch (or `null` when detached HEAD); `state.showAllBranches` toggles the branch filter
 - `state.agent` is the last `/api/agent/status` snapshot (`attached`, `waiters`, `pending`, `queued`, `active`, `last`) driving the "Send to Copilot" panel; `state.commentsDirty` defers a live comment refresh while the user is mid-edit. Neither is persisted — both are session state, not review context.
+- `state.version` is the version of the server this page loaded from, and `state.restarting` suppresses polling while a restart is in flight. A poll that reports a different `version` means the frontend is stale, so the page reloads.
 - Branch selector changes reset both log and diff state plus the range
 - User preferences (`ignoreWhitespace`, `diffLayout`, `showResolved`, `showCommitMessages`, `theme`, `showAllBranches`) are persisted as cookies via `savePref()`/`loadPref()`
 - Per-wrapper state (`wrappedFiles`, `viewedFiles`) is a `Set` persisted as a newline-separated cookie. Both file paths and commit-message sentinels (`revue::commit::<sha>`) coexist in `viewedFiles`.
@@ -227,11 +278,21 @@ All return JSON (camelCase). Errors return `Results.Problem(...)`.
 
 Repo-scoped endpoints take an optional `?repo=<git-root-path>` (default: primary repo).
 
+A middleware rejects any request carrying an `Origin` header that isn't this
+server's own (403). CORS alone isn't enough: a cross-origin POST with no custom
+headers is a "simple request" the browser delivers before the policy applies, so
+without this a page the user visits could shut revue down or make it spawn a
+process. Non-browser callers (the hand-off, the skill's curl) send no `Origin`
+and are unaffected.
+
 - `GET /api/ping` → `{ app: "revue", version }` (identifies the port as revue for single-instance hand-off)
 - `GET /api/repos` → `{ repos: [{ path, name, defaultBase }], primary }`
 - `POST /api/repos` → accepts `{ path }`, registers the repo (used by hand-off), returns `RepoInfo`
 - `DELETE /api/repos?path=X` → 200, or Problem if unknown / last remaining repo
-- `GET /api/config?repo=X` → `{ version, commitHash, latestVersion, updateCommand, repos, repo, repoRoot, defaultBase, currentBranch }` (defaultBase/currentBranch/repoRoot are for the resolved repo)
+- `GET /api/config?repo=X` → `{ version, commitHash, latestVersion, updateCommand, updateReady, repos, repo, repoRoot, defaultBase, currentBranch }` (defaultBase/currentBranch/repoRoot are for the resolved repo; `updateReady` is `{ version, needsDownload }` or absent)
+- `GET /api/update-status` → `{ version, latestVersion, updateCommand, updateReady }` (polled every tick; the frontend reloads when `version` changes under it)
+- `POST /api/shutdown` → `{ stopping: true, port, version }`, then exits — how a newer instance claims the port
+- `POST /api/restart` → `{ restarting: true, version, port }`, or Problem when nothing newer is installed / the download fails
 - `GET /api/current-branch?repo=X` → `{ currentBranch }` (cheap, polled to detect `git checkout`)
 - `GET /api/branches?repo=X` → `string[]`
 - `GET /api/log?repo=Z&base=X&head=Y` → `[{ hash, message }]` (short subject only; for the topbar Commits picker)
@@ -242,7 +303,7 @@ Repo-scoped endpoints take an optional `?repo=<git-root-path>` (default: primary
 - `POST /api/comments/{id}/replies?repo=X` → accepts `{ author, body }`, returns `Reply` (repo optional: falls back to searching all stores for the id)
 - `DELETE /api/comments/{id}?repo=X` → 200 or 404 (repo optional: searches all stores)
 - `POST /api/agent/requests?repo=X` → accepts `{ note, commentIds }` (omit `commentIds` for "everything unresolved on this branch"), returns the queued `AgentRequest`
-- `GET /api/agent/wait?repo=X&timeout=N` → long-poll (N clamped to 1–3600s): `{ request, comments, repo, timedOut: false }` once claimed, or `{ timedOut: true, repo }` on expiry. `comments` is the hydrated `Comment[]` so the caller needn't read `comments.json`.
+- `GET /api/agent/wait?repo=X&timeout=N` → long-poll (N clamped to 1–3600s): `{ request, comments, repo, timedOut: false }` once claimed, `{ timedOut: true, repo }` on expiry, or `{ restarting: true, port, version, repo }` when the server is switching versions. `comments` is the hydrated `Comment[]` so the caller needn't read `comments.json`.
 - `POST /api/agent/requests/{id}/complete` → accepts `{ summary }`, returns the completed `AgentRequest` (no repo param — id is globally unique)
 - `DELETE /api/agent/requests/{id}` → 200 or 404 (drops a stuck round)
 - `GET /api/agent/status?repo=X` → `AgentStatusInfo` `{ attached, waiters, pending, queued, active, last }`
@@ -361,6 +422,7 @@ This gives the user a fully normal Edge window (movable, resizable, F12 DevTools
 - **Add a new setting**: Add HTML in `#settings-panel`, wire up in `init()` alongside other settings, persist with `savePref()`/`loadPref()`
 - **Add a new static file**: Add the file to `static/`, add an explicit `app.MapGet()` route in `Program.cs`
 - **Change what Copilot receives from the Send button**: `AgentRequestQueue` in `AgentRequests.cs` for queue semantics, the `/api/agent/wait` handler in `Program.cs` for the payload shape, and `skills/revue/SKILL.md` Capability 3 for what the agent does with it — all three have to agree.
+- **Change how a new version is found**: `InstalledVersions.cs`. Adding an install layout means adding a source there, not a special case in `Program.cs`.
 - **Cut a new release**: Bump version in `VERSION`, `skills/revue/VERSION`, and `plugin.json`, commit, push, tag with `vX.Y.Z`, push the tag
 
 ## What NOT to do
@@ -376,6 +438,7 @@ This gives the user a fully normal Edge window (movable, resizable, F12 DevTools
 - Don't modify `.gitignore` — use `.git/info/exclude` for local ignores
 - Don't put comment activity behind the changes banner — comments apply live; the banner is only for on-disk file changes and branch switches
 - Don't have Copilot resolve comments it addressed — replying is its job, resolving is the user's
+- Don't add a state-changing endpoint that works without a preflight (no custom header, no JSON body) and assume CORS protects it — the origin middleware is what actually does
 
 ## Ideas backlog
 

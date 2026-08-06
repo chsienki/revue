@@ -1,6 +1,12 @@
 namespace Revue;
 
 /// <summary>
+/// Outcome of a wait: a claimed request, or a bare signal that the server is
+/// restarting so the session can reconnect instead of concluding revue died.
+/// </summary>
+public record AgentWaitResult(AgentRequest? Request, bool Restarting);
+
+/// <summary>
 /// In-memory queue of "address these comments" requests raised from the browser
 /// and claimed by an attached Copilot session that is long-polling
 /// <c>/api/agent/wait</c>. Requests are deliberately not persisted: they only
@@ -25,6 +31,24 @@ public sealed class AgentRequestQueue
     private readonly List<AgentRequest> _requests = [];
     private readonly Dictionary<string, int> _waiters = new(PathComparer);
     private readonly Dictionary<string, TaskCompletionSource> _signals = new(PathComparer);
+    private bool _shuttingDown;
+
+    /// <summary>
+    /// Releases every waiter with a restart signal. Called before the process
+    /// stops so attached sessions learn to reconnect rather than seeing their
+    /// connection drop with no explanation.
+    /// </summary>
+    public void SignalShutdown()
+    {
+        List<TaskCompletionSource> signals;
+        lock (_lock)
+        {
+            _shuttingDown = true;
+            signals = [.. _signals.Values];
+            _signals.Clear();
+        }
+        foreach (var s in signals) s.TrySetResult();
+    }
 
     /// <summary>Queues a request and wakes any session waiting on that repo.</summary>
     public AgentRequest Enqueue(string repo, string? branch, string? note, IEnumerable<string> commentIds)
@@ -54,11 +78,12 @@ public sealed class AgentRequestQueue
 
     /// <summary>
     /// Blocks until a pending request for <paramref name="repo"/> can be claimed,
-    /// flipping it to <c>working</c>, or returns null once <paramref name="timeout"/>
-    /// elapses. Throws <see cref="OperationCanceledException"/> when the caller
-    /// disconnects so an abandoned long-poll doesn't leave a phantom waiter.
+    /// flipping it to <c>working</c>, or returns an empty result once
+    /// <paramref name="timeout"/> elapses. Throws
+    /// <see cref="OperationCanceledException"/> when the caller disconnects so an
+    /// abandoned long-poll doesn't leave a phantom waiter.
     /// </summary>
-    public async Task<AgentRequest?> WaitAsync(string repo, TimeSpan timeout, CancellationToken ct)
+    public async Task<AgentWaitResult> WaitAsync(string repo, TimeSpan timeout, CancellationToken ct)
     {
         var deadline = DateTime.UtcNow + timeout;
         AddWaiter(repo, 1);
@@ -71,13 +96,14 @@ public sealed class AgentRequestQueue
                 Task signal;
                 lock (_lock)
                 {
+                    if (_shuttingDown) return new AgentWaitResult(null, true);
                     var claimed = TryClaimLocked(repo);
-                    if (claimed is not null) return claimed;
+                    if (claimed is not null) return new AgentWaitResult(claimed, false);
                     signal = EnsureSignalLocked(repo).Task;
                 }
 
                 var remaining = deadline - DateTime.UtcNow;
-                if (remaining <= TimeSpan.Zero) return null;
+                if (remaining <= TimeSpan.Zero) return new AgentWaitResult(null, false);
 
                 using var delayCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 var delay = Task.Delay(remaining, delayCts.Token);
@@ -85,7 +111,7 @@ public sealed class AgentRequestQueue
                 delayCts.Cancel(); // stop the timer whichever way we got here
 
                 ct.ThrowIfCancellationRequested();
-                if (finished == delay) return null;
+                if (finished == delay) return new AgentWaitResult(null, false);
             }
         }
         finally

@@ -7,34 +7,106 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Revue;
 
-// ── Version flag ──────────────────────────────────────────────────────────────
+// ── Version ──────────────────────────────────────────────────────────────────
+var fullVersion = Assembly.GetExecutingAssembly()
+    .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "dev";
+// Strip source link metadata (e.g. "0.2.0+d52ebea.full-sha" → "0.2.0")
+var version = fullVersion.Split('+')[0];
+var commitHash = fullVersion.Contains('+') ? fullVersion.Split('+')[1].Split('.')[0] : null;
+
 if (args.Length > 0 && args[0] is "--version" or "-v")
 {
-    var ver = Assembly.GetExecutingAssembly()
-        .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "dev";
-    Console.WriteLine(ver);
+    Console.WriteLine(fullVersion);
     return;
 }
 
-// ── Launch repo ───────────────────────────────────────────────────────────────
-var startPath = args.Length > 0 && !args[0].StartsWith('-') ? args[0] : Directory.GetCurrentDirectory();
-string launchRoot;
-try { launchRoot = GitHelper.FindRepoRoot(startPath); }
-catch (Exception ex) { Console.Error.WriteLine(ex.Message); Environment.Exit(1); return; }
+// ── Args ─────────────────────────────────────────────────────────────────────
+// Positional args are repos to serve; a replacement spawned by an outgoing
+// instance also gets --takeover <pid> --port <n> so it can inherit that port.
+var repoArgs = new List<string>();
+int? takeoverPid = null;
+int? requestedPort = null;
+for (var i = 0; i < args.Length; i++)
+{
+    var arg = args[i];
+    if (arg == "--takeover" && i + 1 < args.Length && int.TryParse(args[i + 1], out var pid)) { takeoverPid = pid; i++; }
+    else if (arg == "--port" && i + 1 < args.Length && int.TryParse(args[i + 1], out var p)) { requestedPort = p; i++; }
+    else if (!arg.StartsWith('-')) repoArgs.Add(arg);
+}
+if (repoArgs.Count == 0) repoArgs.Add(Directory.GetCurrentDirectory());
+
+// ── Launch repos ─────────────────────────────────────────────────────────────
+var launchRoots = new List<string>();
+string? firstRepoError = null;
+foreach (var path in repoArgs)
+{
+    try
+    {
+        var root = GitHelper.FindRepoRoot(path);
+        if (!launchRoots.Contains(root, StringComparer.OrdinalIgnoreCase)) launchRoots.Add(root);
+    }
+    catch (Exception ex)
+    {
+        // An inherited repo that has since disappeared shouldn't sink the restart.
+        firstRepoError ??= ex.Message;
+        Console.Error.WriteLine($"Skipping {path}: {ex.Message}");
+    }
+}
+if (launchRoots.Count == 0)
+{
+    Console.Error.WriteLine(firstRepoError ?? "No repository to serve");
+    Environment.Exit(1);
+    return;
+}
+var launchRoot = launchRoots[0];
 
 // ── Single-instance hand-off ──────────────────────────────────────────────────
-// If a revue instance is already running on this machine, register this repo
-// with it and open the browser focused on that repo instead of starting a
-// second server. Idea #1: one instance targets multiple directories.
+// One instance serves several repos, so a later launch normally registers its
+// repo with the running server and exits. A *newer* binary instead takes over:
+// it inherits the repo set, asks the old instance to quit, and binds its port,
+// so installing an update applies itself the next time revue is launched.
 var instanceFile = InstanceFilePath();
-var runningBaseUrl = await TryHandOffAsync(instanceFile, launchRoot);
-if (runningBaseUrl != null)
+var portPreference = requestedPort ?? 7878;
+// A process that exists to replace another must land on that port or not at all:
+// starting a second server elsewhere would leave the user's tabs and every later
+// hand-off pointing at the wrong one.
+var claimingPort = takeoverPid is not null;
+
+if (takeoverPid is not null)
 {
-    var handoffUrl = $"{runningBaseUrl}/#repo={Uri.EscapeDataString(launchRoot)}";
-    Console.WriteLine($"revue already running  →  {runningBaseUrl}");
-    Console.WriteLine($"added repo             →  {launchRoot}");
-    OpenBrowser(handoffUrl);
-    return;
+    // Spawned as a replacement: the outgoing instance is on its way out.
+    WaitForProcessExit(takeoverPid.Value, TimeSpan.FromSeconds(20));
+}
+else
+{
+    var running = await ProbeInstanceAsync(instanceFile);
+    if (running is not null)
+    {
+        var (runningPort, runningPid, runningVersion, baseUrl) = running.Value;
+        if (!InstalledVersions.IsNewer(version, runningVersion))
+        {
+            // Same or older: hand this repo off and let the running instance keep serving.
+            if (await RegisterRepoAsync(baseUrl, launchRoot))
+            {
+                Console.WriteLine($"revue already running  →  {baseUrl}");
+                Console.WriteLine($"added repo             →  {launchRoot}");
+                OpenBrowser($"{baseUrl}/#repo={Uri.EscapeDataString(launchRoot)}");
+                return;
+            }
+        }
+        else
+        {
+            Console.WriteLine($"replacing revue {runningVersion} (pid {runningPid}) with {version}");
+            foreach (var repo in await FetchReposAsync(baseUrl))
+            {
+                if (!launchRoots.Contains(repo, StringComparer.OrdinalIgnoreCase)) launchRoots.Add(repo);
+            }
+            await RequestShutdownAsync(baseUrl);
+            WaitForProcessExit(runningPid, TimeSpan.FromSeconds(20));
+            portPreference = runningPort;
+            claimingPort = true;
+        }
+    }
 }
 
 // ── Static content ───────────────────────────────────────────────────────────
@@ -44,7 +116,19 @@ if (staticDir != null)
     Console.WriteLine($"static →  {staticDir} (dev mode)");
 
 // ── Port ─────────────────────────────────────────────────────────────────────
-var port = FindFreePort(7878);
+// Prefer the outgoing instance's port so open tabs and armed sessions reconnect
+// to the same address.
+if (!WaitForPortFree(portPreference, TimeSpan.FromSeconds(20)))
+{
+    if (claimingPort)
+    {
+        Console.Error.WriteLine($"port {portPreference} is still in use — the instance being replaced is still running, so this one is stopping rather than starting a second server");
+        Environment.Exit(1);
+        return;
+    }
+    Console.Error.WriteLine($"port {portPreference} busy — falling back to the next free port");
+}
+var port = FindFreePort(portPreference);
 var url = $"http://127.0.0.1:{port}";
 
 // ── Builder ──────────────────────────────────────────────────────────────────
@@ -66,8 +150,17 @@ var jsonOpts = new JsonSerializerOptions
 // ── Repo registry ────────────────────────────────────────────────────────────
 var registry = new RepoRegistry();
 var agentQueue = new AgentRequestQueue();
-try { registry.Add(launchRoot); }
-catch (Exception ex) { Console.Error.WriteLine($"Failed to open {launchRoot}: {ex.Message}"); Environment.Exit(1); return; }
+foreach (var root in launchRoots)
+{
+    try { registry.Add(root); }
+    catch (Exception ex) { Console.Error.WriteLine($"Failed to open {root}: {ex.Message}"); }
+}
+if (registry.PrimaryPath is null)
+{
+    Console.Error.WriteLine($"Failed to open {launchRoot}");
+    Environment.Exit(1);
+    return;
+}
 
 // Resolves the target repo for a request, or short-circuits with an error when
 // none is registered / the git operation throws.
@@ -80,6 +173,26 @@ IResult WithRepo(string? repo, Func<RepoRegistry.Repo, IResult> fn)
 }
 
 var app = builder.Build();
+
+// CORS alone doesn't protect these routes: a cross-origin POST with no custom
+// headers is a "simple request" the browser delivers before applying the policy,
+// which would let any page the user visits shut revue down or make it spawn a
+// process. Non-browser callers (the hand-off, curl) send no Origin at all.
+var allowedOrigins = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+{
+    url,
+    $"http://localhost:{port}",
+};
+app.Use(async (ctx, next) =>
+{
+    var origin = ctx.Request.Headers.Origin.ToString();
+    if (!string.IsNullOrEmpty(origin) && !allowedOrigins.Contains(origin))
+    {
+        ctx.Response.StatusCode = StatusCodes.Status403Forbidden;
+        return;
+    }
+    await next();
+});
 app.UseCors();
 
 // ── Routes ───────────────────────────────────────────────────────────────────
@@ -109,11 +222,6 @@ app.MapGet("/icon.svg", () =>
 });
 
 // GET /api/config
-var fullVersion = Assembly.GetExecutingAssembly()
-    .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "dev";
-// Strip source link metadata (e.g. "0.2.0+d52ebea.full-sha" → "0.2.0")
-var version = fullVersion.Split('+')[0];
-var commitHash = fullVersion.Contains('+') ? fullVersion.Split('+')[1].Split('.')[0] : null;
 
 // ── Background update check ──────────────────────────────────────────────────
 string? latestVersion = null;
@@ -135,7 +243,7 @@ _ = Task.Run(async () =>
         if (tagName is null) return;
 
         var latest = tagName.TrimStart('v');
-        if (latest != version && IsNewerVersion(latest, version))
+        if (latest != version && InstalledVersions.IsNewer(latest, version))
         {
             latestVersion = latest;
             updateCommand = "copilot plugin update revue@chsienki";
@@ -144,6 +252,21 @@ _ = Task.Run(async () =>
     catch
     {
         // Silently ignore — update check is best-effort
+    }
+});
+
+// ── Installed-version watch ──────────────────────────────────────────────────
+// A newer revue can be installed while this one runs -- `copilot plugin update`
+// rewrites the plugin's VERSION pin long before any binary is downloaded. Watch
+// for both so the UI can offer to switch without the user launching anything.
+UpdateTarget? updateReady = InstalledVersions.FindNewerThan(version);
+_ = Task.Run(async () =>
+{
+    while (true)
+    {
+        await Task.Delay(TimeSpan.FromSeconds(60));
+        try { updateReady = InstalledVersions.FindNewerThan(version); }
+        catch { /* best-effort */ }
     }
 });
 
@@ -185,6 +308,7 @@ app.MapGet("/api/config", (string? repo) =>
         commitHash,
         latestVersion,
         updateCommand,
+        updateReady = UpdateReadyPayload(),
         repos = registry.List(),
         repo = r?.Path,
         repoRoot = r?.Path,
@@ -192,6 +316,25 @@ app.MapGet("/api/config", (string? repo) =>
         currentBranch = r == null ? null : GitHelper.GetCurrentBranch(r.Path),
     }, jsonOpts);
 });
+
+// GET /api/update-status — polled by the UI so a version installed after startup
+// surfaces without a refresh
+app.MapGet("/api/update-status", () => Results.Json(new
+{
+    version,
+    latestVersion,
+    updateCommand,
+    updateReady = UpdateReadyPayload(),
+}, jsonOpts));
+
+object? UpdateReadyPayload()
+{
+    var target = updateReady;
+    if (target is null) return null;
+    // A pin with no bootstrap script can't be applied, so don't offer it.
+    if (target.NeedsDownload && target.BootstrapScript is null) return null;
+    return new { version = target.Version, needsDownload = target.NeedsDownload };
+}
 
 // GET /api/current-branch?repo=X — lightweight endpoint for polling branch changes
 app.MapGet("/api/current-branch", (string? repo) =>
@@ -493,10 +636,14 @@ app.MapGet("/api/agent/wait", async (string? repo, int? timeout, HttpContext ctx
     if (r is null) return Results.Problem("No repository registered");
 
     var seconds = Math.Clamp(timeout ?? 3600, 1, 3600);
-    AgentRequest? request;
-    try { request = await agentQueue.WaitAsync(r.Path, TimeSpan.FromSeconds(seconds), ctx.RequestAborted); }
+    AgentWaitResult result;
+    try { result = await agentQueue.WaitAsync(r.Path, TimeSpan.FromSeconds(seconds), ctx.RequestAborted); }
     catch (OperationCanceledException) { return Results.Empty; }
 
+    if (result.Restarting)
+        return Results.Json(new { restarting = true, port, version, repo = r.Path }, jsonOpts);
+
+    var request = result.Request;
     if (request is null)
         return Results.Json(new { request = (AgentRequest?)null, timedOut = true, repo = r.Path }, jsonOpts);
 
@@ -530,6 +677,89 @@ app.MapDelete("/api/agent/requests/{id}", (string id) =>
 app.MapGet("/api/agent/status", (string? repo) => WithRepo(repo, r =>
     Results.Json(agentQueue.Status(r.Path), jsonOpts)));
 
+// ── Restart ──────────────────────────────────────────────────────────────────
+// Switching to a newly installed revue without anyone hunting down the process.
+// Both routes go through BeginShutdown so attached sessions are always told to
+// reconnect before the socket closes.
+
+var shutdownStarted = 0;
+var restartStarted = 0;
+void BeginShutdown(string reason)
+{
+    if (Interlocked.Exchange(ref shutdownStarted, 1) != 0) return;
+    Console.WriteLine($"shutting down: {reason}");
+    agentQueue.SignalShutdown();
+    _ = Task.Run(async () =>
+    {
+        // Give the restart signal and this request's own response time to flush.
+        await Task.Delay(500);
+        app.Lifetime.StopApplication();
+    });
+}
+
+// POST /api/shutdown — quit so a newer instance can take this port
+app.MapPost("/api/shutdown", () =>
+{
+    BeginShutdown("replaced by a newer instance");
+    return Results.Json(new { stopping = true, port, version }, jsonOpts);
+});
+
+// POST /api/restart — start the newer installed revue as our replacement, then quit
+app.MapPost("/api/restart", async () =>
+{
+    // Claim the restart before doing any work: a second tab (or a second click)
+    // would otherwise spawn a second replacement, and both would fight over the
+    // port with one of them drifting off to become an orphan server.
+    if (Interlocked.Exchange(ref restartStarted, 1) != 0)
+        return Results.Json(new { restarting = true, version = updateReady?.Version, port }, jsonOpts);
+
+    var target = updateReady;
+    if (target is null)
+    {
+        Interlocked.Exchange(ref restartStarted, 0);
+        return Results.Problem("No newer version of revue is installed");
+    }
+
+    var replacement = target.ExePath;
+    if (replacement is null)
+    {
+        if (target.BootstrapScript is null)
+        {
+            Interlocked.Exchange(ref restartStarted, 0);
+            return Results.Problem($"revue {target.Version} is pinned but its download script is missing");
+        }
+        try { replacement = await RunBootstrapAsync(target.BootstrapScript); }
+        catch (Exception ex)
+        {
+            Interlocked.Exchange(ref restartStarted, 0);
+            return Results.Problem($"Failed to download revue {target.Version}: {ex.Message}");
+        }
+        if (replacement is null || !File.Exists(replacement))
+        {
+            Interlocked.Exchange(ref restartStarted, 0);
+            return Results.Problem($"Failed to download revue {target.Version}");
+        }
+    }
+
+    var arguments = new List<string> { "--takeover", Environment.ProcessId.ToString(), "--port", port.ToString() };
+    arguments.AddRange(registry.List().Select(r => r.Path));
+
+    try
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo(replacement) { UseShellExecute = false };
+        foreach (var a in arguments) psi.ArgumentList.Add(a);
+        System.Diagnostics.Process.Start(psi);
+    }
+    catch (Exception ex)
+    {
+        Interlocked.Exchange(ref restartStarted, 0);
+        return Results.Problem($"Failed to start revue {target.Version}: {ex.Message}");
+    }
+
+    BeginShutdown($"restarting into {target.Version}");
+    return Results.Json(new { restarting = true, version = target.Version, port }, jsonOpts);
+});
+
 // GET /api/ref-status?repo=Z&ref=X — check if a remote-tracking ref is behind its remote
 app.MapGet("/api/ref-status", (string? repo, string @ref) => WithRepo(repo, r =>
 {
@@ -554,14 +784,18 @@ AppDomain.CurrentDomain.ProcessExit += (_, _) => DeleteInstanceFile(instanceFile
 
 // ── Start ────────────────────────────────────────────────────────────────────
 Console.WriteLine($"revue  →  {url}");
-Console.WriteLine($"repo   →  {launchRoot}");
+foreach (var root in registry.List()) Console.WriteLine($"repo   →  {root.Path}");
 
-// Open browser after 800ms
-_ = Task.Run(async () =>
+// A replacement inherits open tabs that reload themselves, so a new window would
+// just be noise.
+if (takeoverPid is null)
 {
-    await Task.Delay(800);
-    OpenBrowser(url);
-});
+    _ = Task.Run(async () =>
+    {
+        await Task.Delay(800);
+        OpenBrowser(url);
+    });
+}
 
 app.Run();
 
@@ -618,13 +852,6 @@ static void OpenBrowser(string url)
     catch { /* best-effort */ }
 }
 
-static bool IsNewerVersion(string candidate, string current)
-{
-    if (Version.TryParse(candidate, out var c) && Version.TryParse(current, out var v))
-        return c > v;
-    return string.Compare(candidate, current, StringComparison.Ordinal) > 0;
-}
-
 // Path of the per-user file that records the running instance's port. Same
 // location for the writer (a fresh instance) and the reader (a later launch
 // probing for an existing instance) since both run as the same user.
@@ -646,58 +873,157 @@ static void WriteInstanceFile(string path, int port)
     catch { /* best-effort: hand-off simply won't find us */ }
 }
 
-// Only delete the file if it still points at our port, so we never clobber a
-// newer instance's registration during a racy restart.
+// Only delete the file if it's still ours: during a restart the replacement
+// reuses our port, so matching on the port alone would delete its registration.
 static void DeleteInstanceFile(string path, int port)
 {
     try
     {
         if (!File.Exists(path)) return;
-        if (TryReadInstancePort(path) == port) File.Delete(path);
+        var instance = TryReadInstance(path);
+        if (instance?.Port == port && instance?.Pid == Environment.ProcessId) File.Delete(path);
     }
     catch { /* best-effort */ }
 }
 
-static int? TryReadInstancePort(string path)
+static (int Port, int Pid)? TryReadInstance(string path)
 {
     try
     {
         if (!File.Exists(path)) return null;
         using var doc = JsonDocument.Parse(File.ReadAllText(path));
-        if (doc.RootElement.TryGetProperty("port", out var p) && p.TryGetInt32(out var port))
-            return port;
+        if (!doc.RootElement.TryGetProperty("port", out var p) || !p.TryGetInt32(out var port)) return null;
+        var pid = doc.RootElement.TryGetProperty("pid", out var pidEl) && pidEl.TryGetInt32(out var parsed) ? parsed : 0;
+        return (port, pid);
     }
     catch { /* unreadable / malformed → treat as no instance */ }
     return null;
 }
 
-// If a healthy revue instance is already running, register this repo with it
-// and return its base URL; otherwise return null (caller starts a fresh server).
-static async Task<string?> TryHandOffAsync(string instanceFile, string repoRoot)
+// Blocks until the process is gone, so a replacement never probes a port its
+// predecessor is still tearing down.
+static void WaitForProcessExit(int pid, TimeSpan timeout)
 {
-    var port = TryReadInstancePort(instanceFile);
-    if (port is null) return null;
+    try
+    {
+        using var proc = System.Diagnostics.Process.GetProcessById(pid);
+        proc.WaitForExit((int)timeout.TotalMilliseconds);
+    }
+    catch { /* already gone, or not ours to wait on */ }
+}
 
-    var baseUrl = $"http://127.0.0.1:{port}";
+static bool WaitForPortFree(int port, TimeSpan timeout)
+{
+    var deadline = DateTime.UtcNow + timeout;
+    while (true)
+    {
+        try
+        {
+            using var s = new TcpListener(IPAddress.Loopback, port);
+            s.Start(); s.Stop();
+            return true;
+        }
+        catch (SocketException)
+        {
+            if (DateTime.UtcNow >= deadline) return false;
+            Thread.Sleep(200);
+        }
+    }
+}
+
+// Runs the installed plugin's own bootstrap script so platform detection,
+// caching and old-version cleanup keep living in one place. The script prints
+// the executable path as its last line.
+static async Task<string?> RunBootstrapAsync(string script)
+{
+    var psi = new System.Diagnostics.ProcessStartInfo
+    {
+        FileName = OperatingSystem.IsWindows() ? "pwsh" : "bash",
+        UseShellExecute = false,
+        RedirectStandardOutput = true,
+        RedirectStandardError = true,
+    };
+    if (OperatingSystem.IsWindows()) { psi.ArgumentList.Add("-File"); }
+    psi.ArgumentList.Add(script);
+
+    using var proc = System.Diagnostics.Process.Start(psi)
+        ?? throw new InvalidOperationException("could not start the bootstrap script");
+    var stdout = await proc.StandardOutput.ReadToEndAsync();
+    var stderr = await proc.StandardError.ReadToEndAsync();
+    await proc.WaitForExitAsync();
+
+    if (proc.ExitCode != 0)
+        throw new InvalidOperationException(stderr.Trim() is { Length: > 0 } e ? e : $"bootstrap exited with {proc.ExitCode}");
+
+    return stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+        .Select(l => l.Trim())
+        .LastOrDefault(l => l.Length > 0);
+}
+
+// Probes the recorded instance and confirms the port really belongs to revue,
+// so a stale file left by a crash can't make us talk to an unrelated server.
+static async Task<(int Port, int Pid, string Version, string BaseUrl)?> ProbeInstanceAsync(string instanceFile)
+{
+    var instance = TryReadInstance(instanceFile);
+    if (instance is null) return null;
+
+    var baseUrl = $"http://127.0.0.1:{instance.Value.Port}";
     using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
     try
     {
-        // Confirm the port actually belongs to a revue instance, not something
-        // else that grabbed it after a crash left a stale file behind.
         var ping = await http.GetAsync($"{baseUrl}/api/ping");
         if (!ping.IsSuccessStatusCode) return null;
         using var doc = JsonDocument.Parse(await ping.Content.ReadAsStringAsync());
         if (!doc.RootElement.TryGetProperty("app", out var appEl) || appEl.GetString() != "revue")
             return null;
-
-        var payload = JsonSerializer.Serialize(new { path = repoRoot });
-        var resp = await http.PostAsync($"{baseUrl}/api/repos",
-            new StringContent(payload, System.Text.Encoding.UTF8, "application/json"));
-        return resp.IsSuccessStatusCode ? baseUrl : null;
+        var runningVersion = doc.RootElement.TryGetProperty("version", out var v) ? v.GetString() ?? "0.0.0" : "0.0.0";
+        return (instance.Value.Port, instance.Value.Pid, runningVersion, baseUrl);
     }
     catch
     {
         // Connection refused / timeout → stale file, start fresh.
         return null;
     }
+}
+
+static async Task<bool> RegisterRepoAsync(string baseUrl, string repoRoot)
+{
+    using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+    try
+    {
+        var payload = JsonSerializer.Serialize(new { path = repoRoot });
+        var resp = await http.PostAsync($"{baseUrl}/api/repos",
+            new StringContent(payload, System.Text.Encoding.UTF8, "application/json"));
+        return resp.IsSuccessStatusCode;
+    }
+    catch { return false; }
+}
+
+// The repo set the outgoing instance was serving, so a takeover doesn't quietly
+// drop repos the user added from other terminals.
+static async Task<List<string>> FetchReposAsync(string baseUrl)
+{
+    var repos = new List<string>();
+    using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+    try
+    {
+        using var doc = JsonDocument.Parse(await http.GetStringAsync($"{baseUrl}/api/repos"));
+        if (doc.RootElement.TryGetProperty("repos", out var arr))
+        {
+            foreach (var el in arr.EnumerateArray())
+            {
+                if (el.TryGetProperty("path", out var p) && p.GetString() is { Length: > 0 } path)
+                    repos.Add(path);
+            }
+        }
+    }
+    catch { /* best-effort: we still serve the repo we were launched with */ }
+    return repos;
+}
+
+static async Task RequestShutdownAsync(string baseUrl)
+{
+    using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+    try { await http.PostAsync($"{baseUrl}/api/shutdown", new StringContent("")); }
+    catch { /* it may drop the connection as it goes down */ }
 }
