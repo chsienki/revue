@@ -54,6 +54,25 @@ public sealed class AgentRequestQueue
     public AgentRequest Enqueue(string repo, string? branch, string? note, IEnumerable<string> commentIds,
         string kind = "comments", string? @base = null, string? head = null)
     {
+        // Auto-drafts are raised independently by every open tab, so identical
+        // rounds pile up -- and since each one consumes a waiter, they push the
+        // user's actual click further back in the queue. One pending draft per
+        // review context is all that can usefully be done. Comment rounds are
+        // deliberate clicks, so they're never folded together.
+        if (kind == "pr-draft")
+        {
+            lock (_lock)
+            {
+                var duplicate = _requests.FirstOrDefault(r =>
+                    r.Status == StatusPending
+                    && r.Kind == kind
+                    && PathComparer.Equals(r.Repo, repo)
+                    && r.Base == @base
+                    && r.Head == head);
+                if (duplicate is not null) return duplicate;
+            }
+        }
+
         var request = new AgentRequest(
             Id: Guid.NewGuid().ToString(),
             Repo: repo,

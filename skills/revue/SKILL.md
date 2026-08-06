@@ -266,35 +266,79 @@ When the background command finishes, look at what it printed:
 | Response | What it means | What to do |
 |---|---|---|
 | `{"timedOut":true,...}` | Nobody clicked within the hour. | Silently arm a new waiter. Don't narrate it. |
-| `{"request":{...},"comments":[...]}` | The user hit Send. | Address the round (below). Check `request.kind`: `"pr-draft"` means redraft the PR description only (Capability 4), `"comments"` means the usual. |
+| `{"request":{...},"comments":[...]}` | The user hit Send, or a draft was auto-queued. | Arm a fresh waiter, then address the round (below). Check `request.kind`: `"pr-draft"` means redraft the PR description only (Capability 4), `"comments"` means the usual. |
 | `{"restarting":true,"port":N}` | revue is switching to a newly installed version. | Wait for `GET /api/ping` on that port to answer again (poll ~1s apart for up to 30s), then arm a new waiter. Not an exit. |
 | Empty output / `connection refused` | Either revue exited, or a restart dropped the socket before it could answer. | Ping `/api/ping` a few times over ~10s. If it answers, arm a new waiter; if not, revue is gone — don't re-arm, and mention it only if the user is waiting on it. |
 
+Note that the first waiter you arm is often claimed within seconds by an automatic
+`pr-draft` round rather than by anything the user did — revue queues one when a session
+attaches and no draft exists yet. That is normal, and it is exactly why re-arming has to
+happen immediately: otherwise the user's first click has nobody listening.
+
 For a real request:
 
-1. The payload is self-contained — `comments` holds the full comment objects
+1. **Arm the next waiter before you do anything else.** A waiter is single-use: the
+   moment one claims a request, the session is no longer attached. If you leave
+   re-arming until the end of the round, every click the user makes while you work
+   lands in a queue nobody is listening to, and it only gets picked up whenever you
+   happen to re-arm — which looks exactly like the button doing nothing. Arm first,
+   then work. Two waiters can be armed at once, so there is no downside.
+2. The payload is self-contained — `comments` holds the full comment objects
    (file, line, lineContent, body, replies, branch), so you don't need to read
    `.revue/comments.json`.
-2. `request.note` is free-text the user typed alongside the button. Treat it as extra
+3. `request.note` is free-text the user typed alongside the button. Treat it as extra
    instruction for this round (e.g. "just answer the questions, don't change code").
-3. Address every comment exactly as in Capability 2: locate code by `lineContent`, read all
+4. Address every comment exactly as in Capability 2: locate code by `lineContent`, read all
    comments for a file before editing it, make the changes, and post a reply per comment via
    `POST /api/comments/{id}/replies` with `"author": "copilot"`.
-4. **Do not resolve the comments.** The user resolves them once they've checked the work.
-5. Report the round finished:
+5. **Do not resolve the comments.** The user resolves them once they've checked the work.
+6. Report the round finished:
    ```bash
    curl -sS -X POST "http://127.0.0.1:7878/api/agent/requests/<request-id>/complete" \
      -H "Content-Type: application/json" \
      -d '{"summary":"Fixed the null check and answered 2 questions."}'
    ```
    The summary shows up under the button, so keep it to one line.
-6. **Redraft the PR description** (Capability 4). Addressing comments changes what the
+7. **Redraft the PR description** (Capability 4). Addressing comments changes what the
    change *is*, so the description has to keep up.
-7. **Arm a new waiter** so the next round works the same way. This is not optional — forget
-   it and the user is silently back to alt-tabbing.
+8. Check whether the waiter you armed in step 1 has already fired. If it has, handle that
+   round the same way rather than ending your turn on it.
+
+### Don't leave the session unattended
+
+The whole point is that the user never has to come back to the terminal. That only holds
+while a waiter is armed, so treat "there is always exactly one waiter armed" as the
+invariant:
+
+- Arm one at launch, and a fresh one the instant each wake-up arrives — **before** the work,
+  not after.
+- A `timedOut` response, a restart signal, or a round you just finished all mean the same
+  thing: there is no waiter now. Arm one.
+- Never end a turn without a waiter armed while revue is still running. If you're unsure,
+  `GET /api/agent/status?repo=…` and check `attached` is true.
+- The one case where you *don't* re-arm is revue actually being gone (`/api/ping` stops
+  answering).
+
+### Do the round in the foreground
+
+Only the `curl` wait is a background command. Everything the wake-up triggers is
+**normal foreground work in the main session**, visible in the CLI as it happens:
+
+- **Do not hand the round to a sub-agent or background agent.** No `task` tool, no
+  detached shell doing the edits. The user is watching the terminal to see what you
+  are changing on their behalf; work that happens in another context window is
+  invisible to them and can't be interrupted or corrected mid-flight.
+- **Say what you got before you start.** Open the round with a one-line summary of
+  what arrived — how many comments, which files, plus `request.note` if the user typed
+  one. That is the user's confirmation the click landed.
+- **Use your ordinary tools for the work** (read, edit, run tests), so each step shows
+  up in the transcript like any other request.
+- **Report per comment as you go**, not just in the final summary — which comment you
+  are on, what you concluded, what you changed.
 
 The UI reflects each stage on its own (queued → *Copilot is working…* → the summary), and
-your replies appear in the diff without the user reloading anything.
+your replies appear in the diff without the user reloading anything. That is the *user's*
+view; it is not a substitute for showing the work in the terminal.
 
 ---
 

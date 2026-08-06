@@ -179,6 +179,13 @@ back to the terminal to say "address my comments".
   phantom waiter inflating the "Copilot attached" indicator.
 - **Requests queue before anyone attaches** — clicking Send with no session running leaves a
   `pending` request that the next launch's waiter claims immediately.
+- **A waiter is single-use.** Claiming a request detaches the session, so the skill arms the
+  next waiter *before* working a round, not after. Arming last leaves the whole round as a
+  window in which a click reaches nobody, which reads as the button doing nothing. The first
+  waiter of a session is usually claimed within seconds by the auto-draft, not by the user.
+- **Auto-draft rounds are deduplicated in `Enqueue`.** `maybeAutoDraftPr`'s guard is
+  per-tab, so N open tabs queued N identical drafts, each consuming a waiter and pushing the
+  user's click further back. Comment rounds are deliberate clicks and are never folded.
 - **Stuck rounds** (session died mid-work) are cleared by the panel's Cancel button
   (`DELETE /api/agent/requests/{id}`) rather than a server-side heartbeat.
 - The agent replies but **never resolves** comments; resolving stays the user's call.
