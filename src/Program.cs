@@ -150,6 +150,7 @@ var jsonOpts = new JsonSerializerOptions
 // ── Repo registry ────────────────────────────────────────────────────────────
 var registry = new RepoRegistry();
 var agentQueue = new AgentRequestQueue();
+var commitRemaps = new CommitRemapLog();
 foreach (var root in launchRoots)
 {
     try { registry.Add(root); }
@@ -355,8 +356,11 @@ app.MapGet("/api/branches", (string? repo) => WithRepo(repo, r =>
     return Results.Json(branches, jsonOpts);
 }));
 
-// GET /api/changes-hash?repo=Z&base=X&head=Y — lightweight fingerprint for polling
-app.MapGet("/api/changes-hash", (string? repo, string? @base, string? head) => WithRepo(repo, r =>
+// GET /api/changes-hash?repo=Z&base=X&head=Y&commitBase=B&commitHead=H
+// Lightweight fingerprint for polling: `hash` covers the tree, `commits` covers
+// the history of commitBase..commitHead (defaulting to base..head).
+app.MapGet("/api/changes-hash", (string? repo, string? @base, string? head,
+                                 string? commitBase, string? commitHead) => WithRepo(repo, r =>
 {
     var b = @base ?? r.DefaultBase;
     var h = head ?? "HEAD";
@@ -375,7 +379,25 @@ app.MapGet("/api/changes-hash", (string? repo, string? @base, string? head) => W
     var hash = Convert.ToHexString(
         System.Security.Cryptography.SHA256.HashData(
             System.Text.Encoding.UTF8.GetBytes(stat)))[..16];
-    return Results.Json(new { hash }, jsonOpts);
+
+    // The tree fingerprint alone can't see a history rewrite: rewording or
+    // squashing leaves the same files with the same contents, so a rebase is
+    // invisible to it and anything pinned to a sha silently goes stale.
+    //
+    // Fingerprint the branch context rather than the resolved endpoints, so
+    // picking a commit range -- which narrows base..head -- doesn't read as
+    // history having changed underneath the user.
+    string commits;
+    try
+    {
+        var revs = GitHelper.RunGit(["rev-list", $"{commitBase ?? b}..{commitHead ?? h}"], r.Path);
+        commits = Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(revs)))[..16];
+    }
+    catch { commits = ""; }
+
+    return Results.Json(new { hash, commits }, jsonOpts);
 }));
 
 // GET /api/log?repo=Z&base=X&head=Y
@@ -642,6 +664,7 @@ app.MapPost("/api/comments/remap-commits", async (string? repo, HttpRequest req)
 
     var comments = CommentsStore.Load(r.Path);
     var updated = 0;
+    foreach (var (oldSha, newSha) in pairs) commitRemaps.Record(r.Path, oldSha, newSha);
     for (var i = 0; i < comments.Count; i++)
     {
         var c = comments[i];
@@ -659,6 +682,16 @@ app.MapPost("/api/comments/remap-commits", async (string? repo, HttpRequest req)
     if (updated > 0) CommentsStore.Save(r.Path, comments);
     return Results.Json(new { updated }, jsonOpts);
 });
+
+// GET /api/commit-remap?repo=X&sha=Y
+// Where a commit went when history was rewritten, so a view pinned to the old
+// sha can follow the rebase. Null when the sha was never rewritten -- the caller
+// then knows the commit is genuinely gone rather than moved.
+app.MapGet("/api/commit-remap", (string? repo, string? sha) => WithRepo(repo, r =>
+{
+    if (string.IsNullOrWhiteSpace(sha)) return Results.BadRequest("Missing sha");
+    return Results.Json(new { sha = commitRemaps.Resolve(r.Path, sha) }, jsonOpts);
+}));
 
 // ── PR description draft ─────────────────────────────────────────────────────
 // Copilot's answer to "what would you write up as the PR body right now?",

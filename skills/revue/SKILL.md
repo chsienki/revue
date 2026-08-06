@@ -209,8 +209,12 @@ curl -sS -X POST "http://127.0.0.1:7878/api/comments/remap-commits?repo=<url-enc
 ```
 
 Short shas are fine on both sides. This also rewrites the `revue::commit::<sha>` paths of
-comments on commit messages, so those follow their commit too. Do it as part of the rebase,
-not as a follow-up the user has to ask for.
+comments on commit messages, so those follow their commit too.
+
+Call it **as soon as the rewrite lands**, not at the end of the round. It is what tells any
+open browser where the commits went: a tab pinned to a rewritten commit waits for that
+mapping before it can follow the rebase, so until you post it the user is looking at a
+commit that is no longer on the branch.
 
 ### Replying to Comments
 

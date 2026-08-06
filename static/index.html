@@ -1048,6 +1048,7 @@ let state = {
   collapsedFolders: new Set(),
   agent: { attached: false, waiters: 0, pending: 0, active: null, last: null },
   commentsDirty: false,   // live comment refresh deferred while an edit/reply box is open
+  rewritePending: false,  // a pinned commit has left the branch; retry following it each tick
   filesDirty: false,      // ditto for a file refetch (a round rewrote the PR draft)
   version: null,          // version of the server this page is talking to
   restarting: false,      // a restart is in flight; the page reloads when it lands
@@ -1283,6 +1284,63 @@ async function applyLiveFiles() {
   if (commentEditorOpen()) { state.filesDirty = true; return; }
   state.filesDirty = false;
   await loadFiles();
+}
+
+// A history rewrite (rebase, amend, squash) leaves the view pinned to shas that
+// no longer exist. The commits themselves survive in the object database, so the
+// stale view keeps rendering convincingly -- it just quietly stops being the
+// branch. Follow the rewrite instead: re-point a selected range at wherever its
+// commits ended up.
+//
+// Returns 'pending' when a pin has left the branch but nothing yet says where it
+// went. A rewrite and the remap that describes it are two separate steps, so a
+// poll landing between them must not conclude the commit is gone -- the pin is
+// kept and the next tick retries. The user's selection is never discarded on our
+// own initiative: a stale pin is recoverable, a cleared one isn't.
+async function followHistoryRewrite() {
+  if (!state.rangeStart) return 'none';
+  const pins = [state.rangeStart, state.rangeEnd].filter(s => s && s !== '~working~');
+  if (!pins.length) return 'none';
+
+  // Only a pin that has actually left the branch needs following. Ordinary work
+  // (a new commit on top) also changes the commit set, and re-pointing then
+  // would move the user off the commit they deliberately selected.
+  let live;
+  try {
+    live = await api(`/api/log?base=${encodeURIComponent(state.logBase)}&head=${encodeURIComponent(state.logHead)}`);
+  } catch { return 'pending'; }
+  // /api/log abbreviates its hashes, so compare by prefix rather than equality.
+  const onBranch = sha => (live || []).some(c => sha.startsWith(c.hash) || c.hash.startsWith(sha));
+  if (pins.every(onBranch)) return 'none';
+
+  async function moved(sha) {
+    if (onBranch(sha)) return sha;
+    try {
+      const r = await api(`/api/commit-remap?sha=${encodeURIComponent(sha)}`);
+      return r && r.sha ? r.sha : null;
+    } catch { return null; }
+  }
+
+  // A single-commit selection has no end, which is not the same as an end that
+  // couldn't be resolved.
+  const resolvable = s => !s || s === '~working~' ? s : moved(s);
+  const start = await resolvable(state.rangeStart);
+  const end = await resolvable(state.rangeEnd);
+  if (!start || (state.rangeEnd && !end)) return 'pending';
+
+  state.rangeStart = start;
+  state.rangeEnd = end;
+  applyHashToState({ ...parseHashState(), range: buildRangeParam() });
+  writeHashFromState('replace');
+  return 'followed';
+}
+
+// The `range` hash parameter for the current selection, in the same
+// `older..newer` form parseHashState expects.
+function buildRangeParam() {
+  if (!state.rangeStart) return '';
+  if (!state.rangeEnd || state.rangeEnd === state.rangeStart) return state.rangeStart;
+  return `${state.rangeStart}..${state.rangeEnd}`;
 }
 
 // Called when an edit / reply box closes, to land anything that arrived meanwhile.
@@ -2008,6 +2066,7 @@ function setupFilelistResize() {
 
 (function startPolling() {
   let lastDiffHash = null;
+  let lastCommitsHash = null;
   let lastCommentsJson = null;
   let lastReposJson = null;
   let dismissed = false;
@@ -2033,6 +2092,9 @@ function setupFilelistResize() {
 
   async function poll() {
     if (state.restarting) return;
+    // init() sets the branch context; polling before that would fingerprint an
+    // unresolvable range and read the difference as history changing.
+    if (!state.logBase) return;
     try {
       // Pick up repos added/removed by another `revue <path>` launch so the
       // selector stays live without a manual refresh.
@@ -2087,9 +2149,41 @@ function setupFilelistResize() {
       await refreshAgentStatus();
 
       // Check for file/diff changes
-      const { hash } = await api(`/api/changes-hash?base=${encodeURIComponent(state.base)}&head=${encodeURIComponent(state.head)}`);
+      const changes = await api(`/api/changes-hash?base=${encodeURIComponent(state.base)}&head=${encodeURIComponent(state.head)}`
+        + `&commitBase=${encodeURIComponent(state.logBase)}&commitHead=${encodeURIComponent(state.logHead)}`);
+      const hash = changes.hash;
       const diffChanged = lastDiffHash !== null && hash !== lastDiffHash;
       lastDiffHash = hash;
+
+      // A rewrite is tracked separately from the tree: rebasing, rewording or
+      // squashing can leave every file byte-identical, so the tree hash alone
+      // would report nothing at all while the view silently goes stale.
+      const commitsChanged = lastCommitsHash !== null && changes.commits !== lastCommitsHash;
+      lastCommitsHash = changes.commits;
+
+      // A rewrite and the remap describing it arrive separately, so keep
+      // checking until the pin can be followed rather than only on the tick the
+      // commit set moved.
+      if (commitsChanged || state.rewritePending) {
+        // Follow the rewrite rather than banner it: the commits the user picked
+        // still exist, so asking them to reload and re-find them is busywork.
+        // The reload refreshes state.rangeCommits, which is also what lets
+        // comments remapped onto the new shas reappear.
+        const outcome = await followHistoryRewrite();
+        state.rewritePending = outcome === 'pending';
+        if (commitsChanged || outcome === 'followed') {
+          await applyLiveFiles();
+          // Re-pointing the range moves base/head, so the tree fingerprint taken
+          // against the old endpoints would read as "files changed on disk" on
+          // the next tick. Re-baseline instead of bannering our own navigation.
+          try {
+            const rebased = await api(`/api/changes-hash?base=${encodeURIComponent(state.base)}&head=${encodeURIComponent(state.head)}`
+              + `&commitBase=${encodeURIComponent(state.logBase)}&commitHead=${encodeURIComponent(state.logHead)}`);
+            lastDiffHash = rebased.hash;
+            lastCommitsHash = rebased.commits;
+          } catch { lastDiffHash = null; lastCommitsHash = null; }
+        }
+      }
 
       // Banner is only for changes we can't safely apply under the user: files
       // rewritten on disk, or a checkout that moved the review out from under them.

@@ -155,6 +155,9 @@ where the text comes from differ. When touching one of the two, check the other:
 - Comments are **commit-anchored**: `commit` holds the full sha of the newest commit in the range they were written against (`GitHelper.ResolveCommentCommit`), or the sentinel `"working"` when that range had no commits (uncommitted work). A comment on a commit message anchors to that commit's own sha. This does two jobs: the UI scopes comments to the commits on screen (`commitInView` / `state.rangeCommits`, lifted by the "Show all commits" toggle), and the anchor survives line drift — `git show <commit>:<file>` recovers the exact text the user was looking at. Anchoring to the newest *in-range* commit rather than `rev-parse HEAD` is deliberate: the recorded sha is then always a member of the range, so the filter can't hide a comment the moment it's written.
 - `state.rangeCommits` is derived from the commit-sentinel entries in the `/api/diff` response, captured **before** the `showCommitMessages` preference filters them out — otherwise hiding commit messages would silently hide every comment too.
 - Rewriting history orphans comments anchored to the old shas, so `POST /api/comments/remap-commits` takes an old→new sha map (prefix-matched, so short shas work) and moves both `commit` and any `revue::commit::<sha>` file path. The skill calls it as part of any rebase/amend.
+- **The UI follows a rebase on its own.** `/api/changes-hash` returns a second fingerprint over the *branch context*'s commit list (`commitBase`/`commitHead`, deliberately not the resolved endpoints — narrowing to a range would otherwise read as history changing). A tree-only fingerprint can't see a rewrite at all: rewording or squashing leaves every file byte-identical. When that fingerprint moves, `followHistoryRewrite()` re-points a selected range via `/api/commit-remap` and reloads, which also refreshes `state.rangeCommits` so remapped comments reappear.
+- **A pinned commit is never auto-cleared.** The rewrite and the remap that describes it are separate steps, so a poll landing between them must not conclude the commit is gone; `followHistoryRewrite()` returns `'pending'`, `state.rewritePending` keeps retrying each tick, and the selection survives until it can be followed. A stale pin is recoverable, a cleared one isn't.
+- `/api/log` abbreviates its hashes, so anything comparing its output against a stored full sha must match by prefix.
 - The current branch is exposed via `/api/config` (initial load) and `/api/current-branch` (polled every 5s) so live `git checkout` in another terminal updates the filter automatically.
 - In SxS mode, inserting a comment row on one side also inserts a spacer row on the opposite side, with a `ResizeObserver` to keep heights in sync
 - `renderAllDiffs()` saves/restores `#diffview` scroll position so comment actions don't jump to top
@@ -243,6 +246,7 @@ The native `<label class="d2h-file-collapse"><input class="d2h-file-collapse-inp
 - `state.files` is the **complete** ordered list returned by `/api/diff` -- commit-sentinel files (when `state.showCommitMessages` is true) followed by real files. Treat it as the single source of truth; downstream code (`renderFileList`, `renderAllDiffs`, `computeGloballyInjectableIds`, `commentCountForFile`) handles commits and real files uniformly except where cosmetics differ.
 - `state.currentBranch` is the live git branch (or `null` when detached HEAD); `state.showAllBranches` toggles the branch filter
 - `state.rangeCommits` is the set of full shas in the diff on screen; `state.showAllCommits` toggles the commit filter. `commentVisible()` is the single gate both filters go through, so the tree badges, the diff, the orphaned section and the agent hand-off can't disagree about what's in scope.
+- `state.rewritePending` marks a selected commit that has left the branch but can't be followed yet, so the poll keeps retrying instead of stranding or discarding the selection.
 - `state.agent` is the last `/api/agent/status` snapshot (`attached`, `waiters`, `pending`, `queued`, `active`, `last`) driving the "Send to Copilot" panel; `state.commentsDirty` defers a live comment refresh while the user is mid-edit. Neither is persisted — both are session state, not review context.
 - `state.version` is the version of the server this page loaded from, and `state.restarting` suppresses polling while a restart is in flight. A poll that reports a different `version` means the frontend is stale, so the page reloads.
 - Branch selector changes reset both log and diff state plus the range
@@ -324,6 +328,7 @@ and are unaffected.
 - `POST /api/shutdown` → `{ stopping: true, port, version }`, then exits — how a newer instance claims the port
 - `POST /api/restart` → `{ restarting: true, version, port }`, or Problem when nothing newer is installed / the download fails
 - `GET /api/current-branch?repo=X` → `{ currentBranch }` (cheap, polled to detect `git checkout`)
+- `GET /api/changes-hash?repo=Z&base=X&head=Y&commitBase=B&commitHead=H` → `{ hash, commits }` — `hash` fingerprints the tree (`diff --stat` + untracked), `commits` fingerprints the commit list of `commitBase..commitHead` (defaulting to base/head). Both are needed: a rewrite can leave the tree identical, and a range selection changes base/head without history moving.
 - `GET /api/branches?repo=X` → `string[]`
 - `GET /api/log?repo=Z&base=X&head=Y` → `[{ hash, message }]` (short subject only; for the topbar Commits picker)
 - `GET /api/diff?repo=Z&base=X&head=Y&ignoreWhitespace=bool` → `DiffFile[]` (includes untracked files when head=HEAD, **and** a virtual diff per commit message in `base..head` prepended ahead of the real files when `base != head`; each commit entry has its `commit` field populated with `CommitMeta`. The draft PR description, when one exists, is prepended ahead of everything with its `pr` field populated with `PrMeta`)
@@ -335,7 +340,8 @@ and are unaffected.
 - `POST /api/comments?repo=X` → accepts `CommentRequest` (include `author`), returns `Comment`
 - `POST /api/comments/{id}/replies?repo=X` → accepts `{ author, body }`, returns `Reply` (repo optional: falls back to searching all stores for the id)
 - `DELETE /api/comments/{id}?repo=X` → 200 or 404 (repo optional: searches all stores)
-- `POST /api/comments/remap-commits?repo=X` → accepts `{ "<old-sha>": "<new-sha>", … }`, repoints comment anchors (and `revue::commit::` paths) after a history rewrite, returns `{ updated }`
+- `POST /api/comments/remap-commits?repo=X` → accepts `{ "<old-sha>": "<new-sha>", … }`, repoints comment anchors (and `revue::commit::` paths) after a history rewrite, returns `{ updated }`. Also records the mapping in `CommitRemapLog` so open tabs can follow the rewrite.
+- `GET /api/commit-remap?repo=X&sha=Y` → `{ sha }` — where a rewritten commit ended up, or `null` if it was never rewritten
 - `POST /api/agent/requests?repo=X` → accepts `{ note, commentIds, kind }` (omit `commentIds` for "everything unresolved on this branch"; `kind` is `"comments"` (default) or `"pr-draft"`), returns the queued `AgentRequest`
 - `GET /api/agent/wait?repo=X&timeout=N` → long-poll (N clamped to 1–3600s): `{ request, comments, prDraft, commits, base, head, repo, timedOut: false }` once claimed, `{ timedOut: true, repo }` on expiry, or `{ restarting: true, port, version, repo }` when the server is switching versions. `comments` is the hydrated `Comment[]` so the caller needn't read `comments.json`.
 - `POST /api/agent/requests/{id}/complete` → accepts `{ summary }`, returns the completed `AgentRequest` (no repo param — id is globally unique)
@@ -473,6 +479,8 @@ This gives the user a fully normal Edge window (movable, resizable, F12 DevTools
 - Don't modify `.gitignore` — use `.git/info/exclude` for local ignores
 - Don't put comment activity behind the changes banner — comments apply live; the banner is only for on-disk file changes and branch switches
 - Don't have Copilot resolve comments it addressed — replying is its job, resolving is the user's
+- Don't clear the user's commit selection automatically — a rewrite and the remap describing it arrive separately, so an unfollowable pin means "retry next tick", not "the commit is gone"
+- Don't compare `/api/log` hashes against stored shas with `===` — it abbreviates, so match by prefix
 - Don't add a state-changing endpoint that works without a preflight (no custom header, no JSON body) and assume CORS protects it — the origin middleware is what actually does
 
 ## Ideas backlog
