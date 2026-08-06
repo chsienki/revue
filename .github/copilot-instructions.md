@@ -19,6 +19,7 @@ src/
 ├── AgentRequests.cs  # AgentRequestQueue — per-repo queue + long-poll waiters behind the "Send to Copilot" button
 ├── InstalledVersions.cs # Finds newer revue versions on this machine (plugin pin, bootstrap cache, dev bundle)
 ├── CommentsStore.cs  # Load/Save for .revue/comments.json
+├── PrDraftStore.cs   # Load/Save for the draft PR description (.revue/pr.md + pr.json)
 └── Models.cs         # Comment, Reply, CommentRequest, ReplyRequest, DiffFile, RepoInfo, AddRepoRequest, AgentRequest records
 static/
 ├── index.html        # Entire frontend — layout, styles, JS all in one file
@@ -130,6 +131,21 @@ Commit messages flow through **the same pipeline as real file diffs** -- they ar
 - **File tree.** `renderFileList()` partitions `state.files` into `commitFiles` (rendered as a flat list under a `Commits (N)` header at the top) and `regularFiles` (rendered as the existing hierarchical dir tree below). Both use `commentCountForFile()` for badges.
 - **User toggle.** `state.showCommitMessages` (default true, persisted as the `showCommitMessages` cookie, surfaced as the *Show commit messages* checkbox in the settings panel) controls visibility. When off, `loadFiles()` filters commit-sentinel entries out of `state.files` after fetch; any comments on hidden commits then naturally fall into the orphaned `Other comments` section so they're never silently lost.
 
+## PR description as a virtual diff file
+
+The draft PR description reuses **everything** above -- same sentinel-path trick, same
+rendering, comment injection, viewed toggle and tree entry. Only the header decoration and
+where the text comes from differ. When touching one of the two, check the other: a shared
+`isVirtualFile()` predicate exists so they don't drift.
+
+- **Sentinel path.** `GitHelper.PrFilePath = "revue::pr::draft"`; `isPrFile(file)` on the frontend. It sorts ahead of the commit files, matching reading order: description → commits → code.
+- **Copilot writes it, revue never does.** There's deliberately no commit-derived fallback: a mechanical summary of commit subjects isn't what an agent would actually write, so critiquing it would teach the user nothing. No draft means no entry in the diff at all.
+- **Storage.** `PrDraftStore` keeps the body in `.revue/pr.md` and metadata in `.revue/pr.json` -- two files so the body stays clean markdown that `gh pr create --body-file` consumes directly. The metadata copy of the body is blanked on save so the two can't disagree.
+- **Staleness is data, not a guess.** The draft records the `base`/`head`/`branch` it was written against; `PrDraftStore.IsStale` compares them with the current review context and the UI shows a `stale` badge rather than silently presenting an out-of-date description.
+- **Line numbering matches commit messages** (title = 1, blank = 2, body = 3+) so the skill's "locate by `lineContent`" rule and the comment schema are identical for both.
+- **Keeping it current.** `AgentRequest.Kind` is `"comments"` or `"pr-draft"`, so a redraft reuses the same queue, wake-up and status machinery rather than a second notification path. `/api/agent/wait` includes `prDraft` and `commits` in every payload, so either kind of round can redraft without extra calls. The skill redrafts at the end of *every* comment round, since addressing comments changes what the change is.
+- **Auto-draft.** `maybeAutoDraftPr()` queues one `pr-draft` request when a session is attached and no draft exists, keyed on `repo|base|head` so it fires once per context rather than every poll tick.
+
 ## Comment system
 
 - Comments have an `author` field (`"user"` for humans, `"copilot"` for Copilot)
@@ -219,7 +235,7 @@ The native `<label class="d2h-file-collapse"><input class="d2h-file-collapse-inp
 - `state.agent` is the last `/api/agent/status` snapshot (`attached`, `waiters`, `pending`, `queued`, `active`, `last`) driving the "Send to Copilot" panel; `state.commentsDirty` defers a live comment refresh while the user is mid-edit. Neither is persisted — both are session state, not review context.
 - `state.version` is the version of the server this page loaded from, and `state.restarting` suppresses polling while a restart is in flight. A poll that reports a different `version` means the frontend is stale, so the page reloads.
 - Branch selector changes reset both log and diff state plus the range
-- User preferences (`ignoreWhitespace`, `diffLayout`, `showResolved`, `showCommitMessages`, `theme`, `showAllBranches`) are persisted as cookies via `savePref()`/`loadPref()`
+- User preferences (`ignoreWhitespace`, `diffLayout`, `showResolved`, `showCommitMessages`, `showPrMessage`, `theme`, `showAllBranches`) are persisted as cookies via `savePref()`/`loadPref()`
 - Per-wrapper state (`wrappedFiles`, `viewedFiles`) is a `Set` persisted as a newline-separated cookie. Both file paths and commit-message sentinels (`revue::commit::<sha>`) coexist in `viewedFiles`.
 
 ## URL hash state
@@ -296,14 +312,17 @@ and are unaffected.
 - `GET /api/current-branch?repo=X` → `{ currentBranch }` (cheap, polled to detect `git checkout`)
 - `GET /api/branches?repo=X` → `string[]`
 - `GET /api/log?repo=Z&base=X&head=Y` → `[{ hash, message }]` (short subject only; for the topbar Commits picker)
-- `GET /api/diff?repo=Z&base=X&head=Y&ignoreWhitespace=bool` → `DiffFile[]` (includes untracked files when head=HEAD, **and** a virtual diff per commit message in `base..head` prepended ahead of the real files when `base != head`; each commit entry has its `commit` field populated with `CommitMeta`)
+- `GET /api/diff?repo=Z&base=X&head=Y&ignoreWhitespace=bool` → `DiffFile[]` (includes untracked files when head=HEAD, **and** a virtual diff per commit message in `base..head` prepended ahead of the real files when `base != head`; each commit entry has its `commit` field populated with `CommitMeta`. The draft PR description, when one exists, is prepended ahead of everything with its `pr` field populated with `PrMeta`)
+- `GET /api/pr?repo=X&base=Y&head=Z` → `{ draft, stale }` or `{ draft: null }`
+- `PUT /api/pr?repo=X&base=Y&head=Z` → accepts `{ title, body }` from the agent, stamps base/head/branch/generated, returns the `PrDraft`
+- `DELETE /api/pr?repo=X` → 200 or 404
 - `GET /api/file-diff?repo=Z&base=X&head=Y&file=F&ignoreWhitespace=bool` → `DiffFile`
 - `GET /api/comments?repo=X` → `Comment[]`
 - `POST /api/comments?repo=X` → accepts `CommentRequest` (include `author`), returns `Comment`
 - `POST /api/comments/{id}/replies?repo=X` → accepts `{ author, body }`, returns `Reply` (repo optional: falls back to searching all stores for the id)
 - `DELETE /api/comments/{id}?repo=X` → 200 or 404 (repo optional: searches all stores)
-- `POST /api/agent/requests?repo=X` → accepts `{ note, commentIds }` (omit `commentIds` for "everything unresolved on this branch"), returns the queued `AgentRequest`
-- `GET /api/agent/wait?repo=X&timeout=N` → long-poll (N clamped to 1–3600s): `{ request, comments, repo, timedOut: false }` once claimed, `{ timedOut: true, repo }` on expiry, or `{ restarting: true, port, version, repo }` when the server is switching versions. `comments` is the hydrated `Comment[]` so the caller needn't read `comments.json`.
+- `POST /api/agent/requests?repo=X` → accepts `{ note, commentIds, kind }` (omit `commentIds` for "everything unresolved on this branch"; `kind` is `"comments"` (default) or `"pr-draft"`), returns the queued `AgentRequest`
+- `GET /api/agent/wait?repo=X&timeout=N` → long-poll (N clamped to 1–3600s): `{ request, comments, prDraft, commits, base, head, repo, timedOut: false }` once claimed, `{ timedOut: true, repo }` on expiry, or `{ restarting: true, port, version, repo }` when the server is switching versions. `comments` is the hydrated `Comment[]` so the caller needn't read `comments.json`.
 - `POST /api/agent/requests/{id}/complete` → accepts `{ summary }`, returns the completed `AgentRequest` (no repo param — id is globally unique)
 - `DELETE /api/agent/requests/{id}` → 200 or 404 (drops a stuck round)
 - `GET /api/agent/status?repo=X` → `AgentStatusInfo` `{ attached, waiters, pending, queued, active, last }`
@@ -423,6 +442,7 @@ This gives the user a fully normal Edge window (movable, resizable, F12 DevTools
 - **Add a new static file**: Add the file to `static/`, add an explicit `app.MapGet()` route in `Program.cs`
 - **Change what Copilot receives from the Send button**: `AgentRequestQueue` in `AgentRequests.cs` for queue semantics, the `/api/agent/wait` handler in `Program.cs` for the payload shape, and `skills/revue/SKILL.md` Capability 3 for what the agent does with it — all three have to agree.
 - **Change how a new version is found**: `InstalledVersions.cs`. Adding an install layout means adding a source there, not a special case in `Program.cs`.
+- **Add another virtual (non-file) entry to the diff**: follow `revue::pr::draft` — a sentinel path, a `DiffFile` with a synthesised patch, a `*Meta` field, an `is*File` predicate added to `isVirtualFile()`, and a `decorate*Header` call. Don't build a parallel UI.
 - **Cut a new release**: Bump version in `VERSION`, `skills/revue/VERSION`, and `plugin.json`, commit, push, tag with `vX.Y.Z`, push the tag
 
 ## What NOT to do

@@ -439,6 +439,14 @@ app.MapGet("/api/diff", (string? repo, string? @base, string? head, bool? ignore
         }
         catch { /* best-effort; a bad ref shouldn't break the file diff response */ }
     }
+    // The PR description goes first: it's what a reviewer reads before the
+    // commits and the code.
+    try
+    {
+        var prDiff = GitHelper.BuildPrMessageDiff(r.Path, b, h);
+        if (prDiff is not null) files.Insert(0, prDiff);
+    }
+    catch { /* best-effort */ }
     return Results.Json(files, jsonOpts);
 }));
 
@@ -598,13 +606,60 @@ app.MapPost("/api/comments/delete-batch", async (string? repo, HttpRequest req) 
     return Results.Ok();
 });
 
+// ── PR description draft ─────────────────────────────────────────────────────
+// Copilot's answer to "what would you write up as the PR body right now?",
+// kept current as the review changes it and reviewable as a virtual diff file.
+
+// GET /api/pr?repo=X
+app.MapGet("/api/pr", (string? repo, string? @base, string? head) => WithRepo(repo, r =>
+{
+    var draft = PrDraftStore.Load(r.Path);
+    if (draft is null) return Results.Json(new { draft = (PrDraft?)null }, jsonOpts);
+    var b = @base ?? r.DefaultBase;
+    var h = head ?? "HEAD";
+    return Results.Json(new
+    {
+        draft,
+        stale = PrDraftStore.IsStale(draft, b, h, GitHelper.GetCurrentBranch(r.Path)),
+    }, jsonOpts);
+}));
+
+// PUT /api/pr?repo=X — the agent writes a fresh draft
+app.MapPut("/api/pr", async (string? repo, string? @base, string? head, HttpRequest req) =>
+{
+    var r = registry.Resolve(repo);
+    if (r is null) return Results.Problem("No repository registered");
+
+    PrDraftRequest? body;
+    try { body = await req.ReadFromJsonAsync<PrDraftRequest>(jsonOpts); }
+    catch { return Results.BadRequest("Invalid JSON"); }
+    if (body is null || string.IsNullOrWhiteSpace(body.Title))
+        return Results.BadRequest("title required");
+
+    var draft = new PrDraft(
+        Title: body.Title.Trim(),
+        Body: body.Body ?? "",
+        Base: @base ?? r.DefaultBase,
+        Head: head ?? "HEAD",
+        Branch: GitHelper.GetCurrentBranch(r.Path),
+        Generated: DateTime.UtcNow.ToString("o"),
+        GeneratedBy: "copilot");
+    PrDraftStore.Save(r.Path, draft);
+    return Results.Json(draft, jsonOpts);
+});
+
+// DELETE /api/pr?repo=X
+app.MapDelete("/api/pr", (string? repo) => WithRepo(repo, r =>
+    PrDraftStore.Delete(r.Path) ? Results.Ok() : Results.NotFound()));
+
 // ── Agent handshake ──────────────────────────────────────────────────────────
 // Lets the browser wake the Copilot session that launched revue: the UI queues a
 // request, the session's long-poll on /api/agent/wait claims it. Requests live
 // only as long as this process, which is the lifetime they're meaningful for.
 
-// POST /api/agent/requests?repo=X — "these comments are ready to address"
-app.MapPost("/api/agent/requests", async (string? repo, HttpRequest req) =>
+// POST /api/agent/requests?repo=X — "these comments are ready to address", or
+// "redraft the PR description"
+app.MapPost("/api/agent/requests", async (string? repo, string? @base, string? head, HttpRequest req) =>
 {
     var r = registry.Resolve(repo);
     if (r is null) return Results.Problem("No repository registered");
@@ -614,8 +669,13 @@ app.MapPost("/api/agent/requests", async (string? repo, HttpRequest req) =>
     catch { return Results.BadRequest("Invalid JSON"); }
 
     var branch = GitHelper.GetCurrentBranch(r.Path);
-    var ids = body?.CommentIds;
-    if (ids is null || ids.Count == 0)
+    var kind = body?.Kind == "pr-draft" ? "pr-draft" : "comments";
+
+    var ids = body?.CommentIds ?? [];
+    // A redraft is about the description, not the comment threads: handing it
+    // the unresolved set would look identical to "the user hit Send" and get
+    // the code edited without anyone asking.
+    if (kind == "comments" && ids.Count == 0)
     {
         // No explicit selection: everything unresolved that applies to this branch.
         ids = CommentsStore.Load(r.Path)
@@ -623,14 +683,16 @@ app.MapPost("/api/agent/requests", async (string? repo, HttpRequest req) =>
             .Where(c => branch is null || c.Branch is null || c.Branch == branch)
             .Select(c => c.Id)
             .ToList();
+        if (ids.Count == 0) return Results.BadRequest("No comments to address");
     }
-    if (ids.Count == 0) return Results.BadRequest("No comments to address");
 
-    return Results.Json(agentQueue.Enqueue(r.Path, branch, body?.Note, ids), jsonOpts);
+    return Results.Json(agentQueue.Enqueue(
+        r.Path, branch, body?.Note, ids, kind,
+        @base ?? r.DefaultBase, head ?? "HEAD"), jsonOpts);
 });
 
 // GET /api/agent/wait?repo=X&timeout=N — long-poll claimed by an attached session
-app.MapGet("/api/agent/wait", async (string? repo, int? timeout, HttpContext ctx) =>
+app.MapGet("/api/agent/wait", async (string? repo, string? @base, string? head, int? timeout, HttpContext ctx) =>
 {
     var r = registry.Resolve(repo);
     if (r is null) return Results.Problem("No repository registered");
@@ -655,7 +717,30 @@ app.MapGet("/api/agent/wait", async (string? repo, int? timeout, HttpContext ctx
         .Select(id => byId[id])
         .ToList();
 
-    return Results.Json(new { request, comments, repo = r.Path, timedOut = false }, jsonOpts);
+    // Both kinds end with a redraft, so both get the material for one: the
+    // current draft and the commits it should describe. The range comes from
+    // the request (what the user was reviewing when they queued it), not from
+    // the waiter's own query string -- a waiter armed at launch knows nothing
+    // about a range the user picked later.
+    var b = request.Base ?? @base ?? r.DefaultBase;
+    var h = request.Head ?? head ?? "HEAD";
+    PrDraft? prDraft = null;
+    List<CommitInfo> commits = [];
+    try { prDraft = PrDraftStore.Load(r.Path); } catch { /* best-effort */ }
+    try { if (!string.Equals(b, h, StringComparison.Ordinal)) commits = GitHelper.GetCommits(b, h, r.Path); }
+    catch { /* best-effort */ }
+
+    return Results.Json(new
+    {
+        request,
+        comments,
+        prDraft,
+        commits,
+        @base = b,
+        head = h,
+        repo = r.Path,
+        timedOut = false,
+    }, jsonOpts);
 });
 
 // POST /api/agent/requests/{id}/complete — session reports a round finished

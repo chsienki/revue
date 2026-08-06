@@ -798,6 +798,13 @@
   #agent-send:disabled { opacity: 0.5; cursor: default; }
   #agent-cancel { width: 100%; padding: 6px 10px; }
   #agent-hint { font-size: 0.6875rem; color: var(--text-dim); font-style: italic; }
+  .agent-link {
+    background: none; border: none; padding: 0; cursor: pointer;
+    color: var(--text-dim); font-family: inherit; font-size: 0.6875rem;
+    text-decoration: underline; text-align: left;
+  }
+  .agent-link:hover { color: var(--accent); }
+  .agent-link:disabled { opacity: 0.5; cursor: default; text-decoration: none; }
   .orphaned-comments-list { padding: 8px 0; }
   .orphaned-file-group { margin-bottom: 8px; }
   .orphaned-file-header { font-family: var(--mono); font-size: 0.75rem; color: var(--accent); padding: 4px 12px; font-weight: 600; }
@@ -855,6 +862,13 @@
   .revue-commit .revue-commit-meta {
     color: var(--text-dim); font-size: 0.6875rem;
     margin-left: 12px; margin-right: 12px; flex-shrink: 0;
+  }
+  /* A draft written against a different branch or range */
+  .revue-pr-stale {
+    display: inline-block; padding: 0 6px; margin-left: 6px; flex-shrink: 0;
+    font-size: 0.625rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px;
+    color: var(--warning-text); background: var(--warning-bg);
+    border: 1px solid var(--warning-border); border-radius: 8px;
   }
   /* "Commits" virtual section in the file tree */
   .commits-tree-header {
@@ -937,6 +951,10 @@
         <label for="setting-show-commits">Show commit messages</label>
       </div>
       <div class="settings-item">
+        <input type="checkbox" id="setting-show-pr" />
+        <label for="setting-show-pr">Show PR description</label>
+      </div>
+      <div class="settings-item">
         <label for="setting-window-size" title="0 to render all files at once">Files rendered at once</label>
         <input type="number" id="setting-window-size" min="0" max="500" step="1" style="width: 4.5rem" title="0 to render all files at once" />
       </div>
@@ -986,6 +1004,7 @@
       <button id="agent-send" class="revue-btn">🤖 Send comments to Copilot</button>
       <button id="agent-cancel" class="revue-btn secondary" style="display:none">Cancel request</button>
       <div id="agent-hint"></div>
+      <button id="agent-redraft" class="agent-link">Redraft PR description</button>
     </div>
     <div id="filelist-resize"></div>
   </div>
@@ -1018,6 +1037,7 @@ let state = {
   collapsedFolders: new Set(),
   agent: { attached: false, waiters: 0, pending: 0, active: null, last: null },
   commentsDirty: false,   // live comment refresh deferred while an edit/reply box is open
+  filesDirty: false,      // ditto for a file refetch (a round rewrote the PR draft)
   version: null,          // version of the server this page is talking to
   restarting: false,      // a restart is in flight; the page reloads when it lands
 };
@@ -1155,6 +1175,7 @@ state.ignoreWhitespace = loadPref('ignoreWhitespace', 'false') === 'true';
 state.diffLayout = loadPref('diffLayout', 'side-by-side');
 state.showResolved = loadPref('showResolved', 'true') === 'true';
 state.showCommitMessages = loadPref('showCommitMessages', 'true') === 'true';
+state.showPrMessage = loadPref('showPrMessage', 'true') === 'true';
 state.theme = loadPref('theme', 'auto');
 state.showAllBranches = loadPref('showAllBranches', 'false') === 'true';
 state.wrappedFiles = new Set(loadPref('wrappedFiles', '').split('\n').filter(Boolean));
@@ -1236,10 +1257,23 @@ async function applyLiveComments() {
   updateOtherBranchesUI();
   renderFileList();
   await renderAllDiffs();
+  // Badge counts come from the injectable-id set that renderAllDiffs computes,
+  // so the list needs a second pass to catch up with comments that just arrived.
+  renderFileList();
+}
+
+// A finished round rewrites the PR draft as well as the comments, so the file
+// list has to be refetched -- but that re-renders the diff, which would discard
+// an open edit/reply box. Defer it the same way comment refreshes are deferred.
+async function applyLiveFiles() {
+  if (commentEditorOpen()) { state.filesDirty = true; return; }
+  state.filesDirty = false;
+  await loadFiles();
 }
 
 // Called when an edit / reply box closes, to land anything that arrived meanwhile.
 function flushLiveComments() {
+  if (state.filesDirty) { applyLiveFiles(); return; }
   if (state.commentsDirty) applyLiveComments();
 }
 
@@ -1293,6 +1327,11 @@ function renderAgentPanel() {
   const a = state.agent || {};
   const count = agentCandidateComments().length;
   const inFlight = a.active || (a.pending > 0);
+  const redraft = document.getElementById('agent-redraft');
+  if (redraft) {
+    redraft.disabled = !!inFlight || !a.attached;
+    redraft.title = a.attached ? '' : 'Needs an attached Copilot session';
+  }
 
   statusEl.classList.toggle('attached', !!a.attached && !a.active);
   statusEl.classList.toggle('working', !!a.active);
@@ -1303,7 +1342,9 @@ function renderAgentPanel() {
 
   if (a.active) {
     textEl.textContent = 'Copilot is working…';
-    hintEl.textContent = a.active.note ? `Note: ${a.active.note}` : `${a.active.commentIds.length} comment${a.active.commentIds.length === 1 ? '' : 's'} sent`;
+    hintEl.textContent = a.active.kind === 'pr-draft'
+      ? 'Drafting the PR description…'
+      : (a.active.note ? `Note: ${a.active.note}` : `${a.active.commentIds.length} comment${a.active.commentIds.length === 1 ? '' : 's'} sent`);
     return;
   }
   if (a.pending > 0) {
@@ -1334,10 +1375,14 @@ async function refreshAgentStatus() {
     const status = await api('/api/agent/status');
     const wasWorking = !!(state.agent && state.agent.active);
     state.agent = status;
-    // A finished round means new replies are already on disk; pull them in now
-    // rather than waiting for the next comment poll tick.
-    if (wasWorking && !status.active) await reloadCommentsLive();
+    // A finished round means new replies and a fresh PR draft are already on
+    // disk; pull them in now rather than waiting for the next comment poll tick.
+    if (wasWorking && !status.active) {
+      await reloadCommentsLive();
+      await applyLiveFiles();
+    }
     renderAgentPanel();
+    maybeAutoDraftPr();
   } catch { /* best-effort */ }
 }
 
@@ -1367,6 +1412,47 @@ async function sendToAgent() {
     document.getElementById('agent-hint').textContent = `Failed to send: ${e.message}`;
     sendBtn.disabled = false;
   }
+}
+
+// Asks the attached session for a fresh PR description. Same queue and wake-up
+// as a comment round -- only the kind differs.
+async function requestPrDraft(note) {
+  try {
+    const request = await apiPost(
+      `/api/agent/requests?base=${encodeURIComponent(state.base)}&head=${encodeURIComponent(state.head)}`,
+      { kind: 'pr-draft', note: note || '', commentIds: [] });
+    state.agent = { ...state.agent, pending: (state.agent.pending || 0) + 1, queued: request, last: null };
+    renderAgentPanel();
+    setTimeout(refreshAgentStatus, 400);
+    return request;
+  } catch (e) {
+    document.getElementById('agent-hint').textContent = `Failed to request a draft: ${e.message}`;
+    return null;
+  }
+}
+
+// The PR description should already be there when the user arrives, so ask for
+// one as soon as a session is attached. Keyed by review context so it fires once
+// per base/head/repo rather than on every poll tick.
+let _autoDraftedFor = null;
+async function maybeAutoDraftPr() {
+  if (!state.agent || !state.agent.attached) return;
+  if (state.agent.active || state.agent.pending) return;
+  const key = `${state.repo}|${state.base}|${state.head}`;
+  if (_autoDraftedFor === key) return;
+  // Claim the key before the first await: two overlapping status refreshes
+  // would otherwise both get past the check and queue a round each.
+  _autoDraftedFor = key;
+  // Only when there's nothing to show; an existing draft is refreshed by rounds.
+  if (state.files.some(f => isPrFile(f.file))) return;
+  try {
+    const existing = await api(`/api/pr?base=${encodeURIComponent(state.base)}&head=${encodeURIComponent(state.head)}`);
+    if (existing && existing.draft) return;
+  } catch {
+    _autoDraftedFor = null; // couldn't tell; let a later tick retry
+    return;
+  }
+  await requestPrDraft('Initial draft: no comments yet.');
 }
 
 async function cancelAgentRequest() {
@@ -1742,6 +1828,7 @@ async function init() {
 
   document.getElementById('agent-send').addEventListener('click', sendToAgent);
   document.getElementById('agent-cancel').addEventListener('click', cancelAgentRequest);
+  document.getElementById('agent-redraft').addEventListener('click', () => requestPrDraft(''));
   renderAgentPanel();
   refreshAgentStatus();
 
@@ -1795,6 +1882,14 @@ async function init() {
     state.showCommitMessages = showCommitsCheck.checked;
     savePref('showCommitMessages', state.showCommitMessages);
     // Re-fetch so the filter applies before render/badge counting.
+    loadFiles();
+  });
+
+  const showPrCheck = document.getElementById('setting-show-pr');
+  showPrCheck.checked = state.showPrMessage;
+  showPrCheck.addEventListener('change', () => {
+    state.showPrMessage = showPrCheck.checked;
+    savePref('showPrMessage', state.showPrMessage);
     loadFiles();
   });
 
@@ -1989,6 +2084,7 @@ async function loadFiles() {
     // orphaned section so they're never silently lost).
     let files = await api(`/api/diff?base=${encodeURIComponent(state.base)}&head=${encodeURIComponent(state.head)}&ignoreWhitespace=${state.ignoreWhitespace}`);
     if (!state.showCommitMessages) files = files.filter(f => !isCommitFile(f.file));
+    if (!state.showPrMessage) files = files.filter(f => !isPrFile(f.file));
     state.files = files;
     sortFilesTreeOrder(state.files);
   } catch(e) {
@@ -2014,11 +2110,24 @@ async function loadFiles() {
 // path prefix. The colons are illegal in Windows paths so this never collides.
 function isCommitFile(file) { return typeof file === 'string' && file.startsWith('revue::commit::'); }
 
+// The draft PR description rides the same virtual-file pipeline as commit messages.
+const PR_FILE = 'revue::pr::draft';
+function isPrFile(file) { return file === PR_FILE; }
+
+// Anything that isn't a real path on disk. Used wherever the distinction is
+// "is there a file to fetch more context for / diff against", so the two virtual
+// kinds can't drift apart as either grows.
+function isVirtualFile(file) { return isCommitFile(file) || isPrFile(file); }
+
 // Sort files in tree order: directories before files at each level, alphabetical within each group
 function sortFilesTreeOrder(files) {
   files.sort((a, b) => {
-    // Commit-message virtual files always come before real files, and within
-    // the commit block preserve the order the server returned (newest first).
+    // Virtual files lead: the PR description first, then commit messages, then
+    // real files. Within the commit block preserve server order (newest first).
+    const aPr = isPrFile(a.file), bPr = isPrFile(b.file);
+    if (aPr && !bPr) return -1;
+    if (!aPr && bPr) return 1;
+    if (aPr && bPr) return 0;
     const aCommit = isCommitFile(a.file), bCommit = isCommitFile(b.file);
     if (aCommit && !bCommit) return -1;
     if (!aCommit && bCommit) return 1;
@@ -2085,11 +2194,40 @@ function renderFileList() {
   if (!state.files.length) { el.innerHTML = '<div style="padding:12px;color:var(--text-dim)">No changes</div>'; return; }
   el.innerHTML = '';
 
-  // Partition: commits (cluster at the top under a flat "Commits (N)" header)
-  // vs. real files (hierarchical tree below). Both are first-class DiffFile
-  // entries in state.files; only the rendering shape differs.
+  // Partition: the PR description, then commits (a flat "Commits (N)" cluster),
+  // then real files (hierarchical tree). All are first-class DiffFile entries in
+  // state.files; only the rendering shape differs.
+  const prFile = state.files.find(f => isPrFile(f.file));
   const commitFiles = state.files.filter(f => isCommitFile(f.file));
-  const regularFiles = state.files.filter(f => !isCommitFile(f.file));
+  const regularFiles = state.files.filter(f => !isVirtualFile(f.file));
+
+  if (prFile) {
+    const header = document.createElement('div');
+    header.className = 'commits-tree-header';
+    header.textContent = 'Pull request';
+    el.appendChild(header);
+
+    const row = document.createElement('div');
+    row.className = 'commit-tree-item' + (state.currentFile === prFile.file ? ' active' : '');
+    const title = prFile.pr?.title || '(untitled)';
+    const fileComments = commentsForFile(prFile.file);
+    const cnt = fileComments.length;
+    row.innerHTML = `
+      <span class="commit-tree-hash">🔀</span>
+      <span class="commit-tree-subject" title="${escHtml(title)}">${escHtml(title)}</span>
+      ${prFile.pr?.stale ? '<span class="revue-pr-stale" title="Drafted against a different branch or range">stale</span>' : ''}
+      ${cnt ? `<span class="comment-badge">${cnt}</span>` : ''}
+    `;
+    row.addEventListener('click', () => {
+      state.currentFile = prFile.file;
+      renderFileList();
+      writeHashFromState('replace');
+      const target = document.getElementById(`file-${encodeFileId(prFile.file)}`);
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    el.appendChild(row);
+    wireCommentBadge(row, fileComments);
+  }
 
   if (commitFiles.length) {
     const header = document.createElement('div');
@@ -2554,17 +2692,22 @@ async function renderAllDiffs(opts) {
     const wrapper = fileWrappers[i];
     wrapper.id = `file-${encodeFileId(f.file)}`;
     const commit = isCommitFile(f.file);
-    if (commit) wrapper.classList.add('revue-commit');
+    const pr = isPrFile(f.file);
+    // Both virtual kinds share the message-style presentation; only the header
+    // decoration differs.
+    if (commit || pr) wrapper.classList.add('revue-commit');
+    if (pr) wrapper.classList.add('revue-pr');
     if (state.wrappedFiles.has(f.file)) wrapper.classList.add('revue-wrap');
     if (commit && f.commit) decorateCommitHeader(f.commit, wrapper);
+    if (pr) decoratePrHeader(f.pr, wrapper);
     injectWrapToggle(f.file, wrapper);
     wireViewedCheckbox(f.file, wrapper);
     const injected = injectComments(f.file, f.patch, wrapper);
     injected.forEach(id => injectedIds.add(id));
     attachLineClickHandlers(f.file, f.patch, wrapper);
-    // Commit messages are a complete, fixed text -- there's no "more context"
+    // Virtual files are a complete, fixed text -- there's no "more context"
     // to fetch, so the expand-context controls would be dead weight.
-    if (!commit) attachExpandButtons(f.file, wrapper);
+    if (!commit && !pr) attachExpandButtons(f.file, wrapper);
   });
   state._injectedIds = injectedIds;
 
@@ -2602,9 +2745,11 @@ async function renderAllDiffs(opts) {
       group.className = 'orphaned-file-group';
       const header = document.createElement('div');
       header.className = 'orphaned-file-header';
-      header.textContent = isCommitFile(file)
-        ? `Commit ${file.slice('revue::commit::'.length, 'revue::commit::'.length + 8)} (not in current range)`
-        : file;
+      header.textContent = isPrFile(file)
+        ? 'Pull request description (not shown)'
+        : isCommitFile(file)
+          ? `Commit ${file.slice('revue::commit::'.length, 'revue::commit::'.length + 8)} (not in current range)`
+          : file;
       group.appendChild(header);
       comments.forEach(c => {
         renderCommentItem(group, c, file, { orphaned: true });
@@ -3036,6 +3181,39 @@ function decorateCommitHeader(meta, wrapper) {
   metaEl.textContent = `${meta.author || ''} · ${dateText}`;
   // Place author/date BEFORE the Viewed checkbox so the metadata sits next to
   // the subject and the user actions (Viewed, wrap) cluster on the far right.
+  const collapse = header.querySelector('.d2h-file-collapse');
+  const wrap = header.querySelector('.revue-wrap-toggle');
+  if (collapse) header.insertBefore(metaEl, collapse);
+  else if (wrap) header.insertBefore(metaEl, wrap);
+  else header.appendChild(metaEl);
+}
+
+// Same treatment for the draft PR description: title in place of the sentinel
+// path, and when it was drafted (or a stale badge when it was written against a
+// different branch or range).
+function decoratePrHeader(meta, wrapper) {
+  const header = wrapper.querySelector('.d2h-file-header');
+  if (!header || header.dataset.revueCommitDecorated) return;
+  header.dataset.revueCommitDecorated = '1';
+  const title = (meta && meta.title) || '(untitled)';
+  const nameEl = header.querySelector('.d2h-file-name');
+  if (nameEl) {
+    nameEl.innerHTML = `
+      <span class="revue-commit-icon" title="Pull request description">🔀</span>
+      <span class="revue-commit-subject" title="${escHtml(title)}">${escHtml(title)}</span>
+      ${meta && meta.stale ? '<span class="revue-pr-stale" title="Drafted against a different branch or range">stale</span>' : ''}
+    `;
+  }
+
+  const metaEl = document.createElement('span');
+  metaEl.className = 'revue-commit-meta';
+  if (meta && meta.generated) {
+    let when = meta.generated;
+    try { when = new Date(meta.generated).toLocaleString(); } catch {}
+    metaEl.textContent = `drafted ${when}${meta.generatedBy ? ` by ${meta.generatedBy}` : ''}`;
+  } else {
+    metaEl.textContent = 'draft';
+  }
   const collapse = header.querySelector('.d2h-file-collapse');
   const wrap = header.querySelector('.revue-wrap-toggle');
   if (collapse) header.insertBefore(metaEl, collapse);

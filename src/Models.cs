@@ -42,7 +42,7 @@ public record ReplyRequest(
     string Body
 );
 
-public record DiffFile(string File, string Patch, int Additions, int Deletions, CommitMeta? Commit = null);
+public record DiffFile(string File, string Patch, int Additions, int Deletions, CommitMeta? Commit = null, PrMeta? Pr = null);
 
 // A repository served by this instance, as exposed to the frontend. Name is a
 // minimal unique label (usually the last path segment) computed by RepoRegistry.
@@ -60,6 +60,29 @@ public record CommitInfo(string Hash, string Subject, string Body, string Author
 // Body is intentionally omitted -- it's already encoded into the patch lines.
 public record CommitMeta(string Hash, string Subject, string Author, string Date);
 
+/// <summary>
+/// The draft PR description for a repo: Copilot's answer to "what would you
+/// write up as the PR body right now?". Base/Head/Branch record the review
+/// context it was written against so a later mismatch can be flagged rather
+/// than silently shown.
+/// </summary>
+public record PrDraft(
+    string Title,
+    string Body,
+    string? Base,
+    string? Head,
+    string? Branch,
+    string? Generated,
+    string? GeneratedBy
+);
+
+// Cosmetic metadata attached to DiffFile for the PR-description entry. The body
+// is already encoded into the patch lines, as with CommitMeta.
+public record PrMeta(string Title, string? Generated, string? GeneratedBy, bool Stale);
+
+// Body of PUT /api/pr.
+public record PrDraftRequest(string? Title, string? Body);
+
 // A request from the browser asking an attached Copilot session to address a set
 // of comments. Status moves pending -> working (a waiter claimed it) -> done.
 public record AgentRequest(
@@ -72,12 +95,16 @@ public record AgentRequest(
     string Status,
     string? Claimed,
     string? Completed,
-    string? Summary
+    string? Summary,
+    string Kind = "comments",
+    string? Base = null,
+    string? Head = null
 );
 
 // Body of POST /api/agent/requests. A null CommentIds means "whatever is
-// unresolved right now", resolved server-side at enqueue time.
-public record AgentRequestBody(string? Note, List<string>? CommentIds);
+// unresolved right now", resolved server-side at enqueue time. Kind selects the
+// job: addressing comments, or redrafting the PR description.
+public record AgentRequestBody(string? Note, List<string>? CommentIds, string? Kind);
 
 // Body of POST /api/agent/requests/{id}/complete.
 public record AgentCompleteBody(string? Summary);

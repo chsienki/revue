@@ -234,7 +234,7 @@ When the background command finishes, look at what it printed:
 | Response | What it means | What to do |
 |---|---|---|
 | `{"timedOut":true,...}` | Nobody clicked within the hour. | Silently arm a new waiter. Don't narrate it. |
-| `{"request":{...},"comments":[...]}` | The user hit Send. | Address the round (below). |
+| `{"request":{...},"comments":[...]}` | The user hit Send. | Address the round (below). Check `request.kind`: `"pr-draft"` means redraft the PR description only (Capability 4), `"comments"` means the usual. |
 | `{"restarting":true,"port":N}` | revue is switching to a newly installed version. | Wait for `GET /api/ping` on that port to answer again (poll ~1s apart for up to 30s), then arm a new waiter. Not an exit. |
 | Empty output / `connection refused` | Either revue exited, or a restart dropped the socket before it could answer. | Ping `/api/ping` a few times over ~10s. If it answers, arm a new waiter; if not, revue is gone — don't re-arm, and mention it only if the user is waiting on it. |
 
@@ -256,11 +256,84 @@ For a real request:
      -d '{"summary":"Fixed the null check and answered 2 questions."}'
    ```
    The summary shows up under the button, so keep it to one line.
-6. **Arm a new waiter** so the next round works the same way. This is not optional — forget
+6. **Redraft the PR description** (Capability 4). Addressing comments changes what the
+   change *is*, so the description has to keep up.
+7. **Arm a new waiter** so the next round works the same way. This is not optional — forget
    it and the user is silently back to alt-tabbing.
 
 The UI reflects each stage on its own (queued → *Copilot is working…* → the summary), and
 your replies appear in the diff without the user reloading anything.
+
+---
+
+## Capability 4: Keep the PR description current
+
+revue shows a **draft PR description** at the top of the review, above the commits. It
+answers one question: *if you opened the PR right now, what would you write?* It is always
+yours — revue never synthesises one from commit subjects, because a mechanical summary is
+not what you'd actually write and there'd be nothing worth critiquing.
+
+The draft lives in `.revue/pr.md` (body) and `.revue/pr.json` (title + the base/head/branch
+it was written against). Write it through the API rather than editing the files, so that
+metadata stays right:
+
+```bash
+curl -sS -X PUT "http://127.0.0.1:7878/api/pr?base=<base>&head=<head>" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Send comments to Copilot from the review UI","body":"...markdown..."}'
+```
+
+Take `<base>` and `<head>` from the wait payload's `base` / `head` fields — they're the
+range the user was actually reviewing when they queued the round. Stamping a different
+range marks the draft stale, and no redraft will clear that badge.
+
+The title must be a single line; embedded newlines are flattened to spaces.
+
+### When to write it
+
+- On a `"kind":"pr-draft"` request — a redraft is the *whole* job. Don't touch code.
+- At the end of **every** comment round, after posting your replies.
+- When the user comments on the draft itself (see below).
+
+The `/api/agent/wait` payload gives you what you need either way: `prDraft` (the current
+draft, or null), `commits` (the range with full messages), and `base`/`head` (the range the
+user was reviewing — use these when you `PUT`, not the repo defaults).
+
+### What it should say
+
+Write the description, not a changelog:
+
+- **Lead with why.** What problem does this solve, what was wrong before? A reviewer who
+  reads only the first paragraph should understand the point of the branch.
+- **Then what changed**, at the level of design decisions and trade-offs — not a file list,
+  which the diff already shows.
+- **Call out anything that needs attention**: risky bits, follow-ups, deliberate omissions.
+- **Reflect the review.** If a comment thread settled a question, the description should
+  read as though that decision was always the plan.
+- **Follow the user's writing conventions** — the same ones that apply to commit messages
+  and code comments. Present tense, no "this PR"/"previously"/"we now" framing, no
+  restating the diff, no filler headings for their own sake.
+- **Keep it tight.** A few short paragraphs beats a template with empty sections.
+
+### Comments on the draft
+
+Comments whose `file` is `revue::pr::draft` are feedback on the description itself. `line`
+indexes into the rendered text: title = 1, blank = 2, body from 3. Rewrite the draft to
+take the feedback on board, `PUT` it, then reply to the comment saying what you changed.
+
+### Opening or updating the real PR
+
+Once the user is happy, and **only when they ask**:
+
+```bash
+# new PR
+gh pr create --title "<title from pr.json>" --body-file .revue/pr.md
+
+# existing PR
+gh pr edit --body-file .revue/pr.md
+```
+
+Never create or edit a PR just because a draft exists — the draft is a proposal, not consent.
 
 ---
 

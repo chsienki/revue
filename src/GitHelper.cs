@@ -191,6 +191,59 @@ public static class GitHelper
     public const string CommitFilePrefix = "revue::commit::";
 
     /// <summary>
+    /// Sentinel path for the draft PR description, which rides the same virtual
+    /// -diff-file pipeline as commit messages.
+    /// </summary>
+    public const string PrFilePath = "revue::pr::draft";
+
+    /// <summary>
+    /// Builds the virtual diff file for the draft PR description: title on line
+    /// 1, blank line 2, body from line 3, matching how commit messages are laid
+    /// out so comment line numbers mean the same thing in both. Returns null
+    /// when nothing has been drafted yet -- there's no entry to show.
+    /// </summary>
+    public static DiffFile? BuildPrMessageDiff(string repoRoot, string @base, string head)
+    {
+        var draft = PrDraftStore.Load(repoRoot);
+        if (draft is null) return null;
+
+        // Every entry must emit exactly one physical '+' line, or the hunk
+        // header's line count lies. In inline layout all patches are handed to
+        // diff2html as one document, so a malformed hunk here would derail
+        // parsing of every file after it.
+        var lines = new List<string> { Flatten(draft.Title) };
+        if (!string.IsNullOrEmpty(draft.Body))
+        {
+            lines.Add("");
+            lines.AddRange(Normalize(draft.Body).TrimEnd('\n').Split('\n'));
+        }
+
+        var sb = new System.Text.StringBuilder();
+        sb.Append("diff --git a/").Append(PrFilePath).Append(" b/").Append(PrFilePath).Append('\n');
+        sb.Append("new file mode 100644\n");
+        sb.Append("--- /dev/null\n");
+        sb.Append("+++ b/").Append(PrFilePath).Append('\n');
+        sb.Append("@@ -0,0 +1,").Append(lines.Count).Append(" @@\n");
+        foreach (var line in lines) sb.Append('+').Append(line).Append('\n');
+
+        return new DiffFile(
+            File: PrFilePath,
+            Patch: sb.ToString(),
+            Additions: lines.Count,
+            Deletions: 0,
+            Pr: new PrMeta(
+                Title: Flatten(draft.Title),
+                Generated: draft.Generated,
+                GeneratedBy: draft.GeneratedBy,
+                Stale: PrDraftStore.IsStale(draft, @base, head, GetCurrentBranch(repoRoot))));
+    }
+
+    private static string Normalize(string text) => text.Replace("\r\n", "\n").Replace('\r', '\n');
+
+    // A single-line rendering: line breaks in a title would break the patch.
+    private static string Flatten(string text) => Normalize(text).Replace('\n', ' ').Trim();
+
+    /// <summary>
     /// Builds a virtual unified-diff file for each commit in base..head whose
     /// patch body is the commit message itself (one '+' line per message line).
     /// The frontend renders these through the same diff2html pipeline as real

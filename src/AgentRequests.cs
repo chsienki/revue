@@ -51,7 +51,8 @@ public sealed class AgentRequestQueue
     }
 
     /// <summary>Queues a request and wakes any session waiting on that repo.</summary>
-    public AgentRequest Enqueue(string repo, string? branch, string? note, IEnumerable<string> commentIds)
+    public AgentRequest Enqueue(string repo, string? branch, string? note, IEnumerable<string> commentIds,
+        string kind = "comments", string? @base = null, string? head = null)
     {
         var request = new AgentRequest(
             Id: Guid.NewGuid().ToString(),
@@ -63,7 +64,10 @@ public sealed class AgentRequestQueue
             Status: StatusPending,
             Claimed: null,
             Completed: null,
-            Summary: null);
+            Summary: null,
+            Kind: kind,
+            Base: @base,
+            Head: head);
 
         TaskCompletionSource? signal;
         lock (_lock)
