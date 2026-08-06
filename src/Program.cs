@@ -532,7 +532,11 @@ app.MapPost("/api/comments", async (string? repo, HttpRequest req) =>
         Replies: [],
         // Capture the current git branch so we can filter comments per-branch.
         // null when detached HEAD or git fails — such comments show on all branches.
-        Branch: GitHelper.GetCurrentBranch(r.Path)
+        Branch: GitHelper.GetCurrentBranch(r.Path),
+        // Anchor the comment to the commit it was written against, so it can be
+        // scoped to the commit range being viewed and so the exact text it
+        // refers to stays recoverable after rebases move the lines.
+        Commit: GitHelper.ResolveCommentCommit(cr.File, cr.Base, cr.Head, r.Path)
     );
     comments.Add(comment);
     CommentsStore.Save(r.Path, comments);
@@ -604,6 +608,56 @@ app.MapPost("/api/comments/delete-batch", async (string? repo, HttpRequest req) 
     comments.RemoveAll(c => idSet.Contains(c.Id));
     CommentsStore.Save(r.Path, comments);
     return Results.Ok();
+});
+
+// POST /api/comments/remap-commits?repo=X
+// Body: { "<old-sha>": "<new-sha>", ... }
+// Rewriting history (rebase, amend) leaves comments anchored to shas that are
+// no longer in the range, which hides them. Only whoever did the rewrite knows
+// how the commits map, so they repoint the comments here.
+app.MapPost("/api/comments/remap-commits", async (string? repo, HttpRequest req) =>
+{
+    var r = registry.Resolve(repo);
+    if (r is null) return Results.Problem("No repository registered");
+
+    Dictionary<string, string>? map;
+    try { map = await req.ReadFromJsonAsync<Dictionary<string, string>>(jsonOpts); }
+    catch { return Results.BadRequest("Invalid JSON"); }
+    if (map is null || map.Count == 0) return Results.BadRequest("Empty map");
+
+    // Callers naturally deal in short shas, so match on prefix and store the
+    // expanded form.
+    var pairs = map
+        .Where(kv => !string.IsNullOrWhiteSpace(kv.Key) && !string.IsNullOrWhiteSpace(kv.Value))
+        .Select(kv => (Old: kv.Key.Trim(), New: GitHelper.ExpandSha(kv.Value.Trim(), r.Path)))
+        .ToList();
+
+    string? Remap(string? sha)
+    {
+        if (sha is null || sha == GitHelper.WorkingTreeCommit) return sha;
+        foreach (var (oldSha, newSha) in pairs)
+            if (sha.StartsWith(oldSha, StringComparison.OrdinalIgnoreCase)) return newSha;
+        return sha;
+    }
+
+    var comments = CommentsStore.Load(r.Path);
+    var updated = 0;
+    for (var i = 0; i < comments.Count; i++)
+    {
+        var c = comments[i];
+        // A commit-message comment carries the sha in its file path as well, so
+        // both have to move together or it would anchor to one commit and render
+        // against another.
+        var file = c.File.StartsWith(GitHelper.CommitFilePrefix, StringComparison.Ordinal)
+            ? GitHelper.CommitFilePrefix + Remap(c.File[GitHelper.CommitFilePrefix.Length..])
+            : c.File;
+        var commit = Remap(c.Commit);
+        if (file == c.File && commit == c.Commit) continue;
+        comments[i] = c with { File = file, Commit = commit };
+        updated++;
+    }
+    if (updated > 0) CommentsStore.Save(r.Path, comments);
+    return Results.Json(new { updated }, jsonOpts);
 });
 
 // ── PR description draft ─────────────────────────────────────────────────────

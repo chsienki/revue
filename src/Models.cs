@@ -20,7 +20,8 @@ public record Comment(
     string Created,
     bool Resolved,
     List<Reply>? Replies,
-    string? Branch = null
+    string? Branch = null,
+    string? Commit = null
 );
 
 public record CommentRequest(

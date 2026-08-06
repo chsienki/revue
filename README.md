@@ -144,4 +144,5 @@ revue/
 | POST | `/api/comments` | Add or update a comment |
 | POST | `/api/comments/{id}/replies` | Add a reply to a comment |
 | POST | `/api/comments/delete-batch` | Bulk delete by ID array |
+| POST | `/api/comments/remap-commits` | Repoint comment commit anchors after a rebase |
 | DELETE | `/api/comments/{id}` | Delete a single comment |

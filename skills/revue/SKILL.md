@@ -136,8 +136,9 @@ When you see such a comment:
 3. Either:
    - **Apply the change**, with the user's permission, via `git commit --amend`
      (for the most-recent commit) or `git rebase -i <sha>^` + `reword` for older
-     commits. After amending, the comment hash will become stale -- post a reply
-     via the API noting the new short SHA so the user can re-fetch in the UI.
+     commits. Amending rewrites the sha, so immediately repoint the affected
+     comments with `POST /api/comments/remap-commits` (see "The `commit` field")
+     — otherwise they vanish from the UI — and post a reply noting the new short sha.
    - **Or just propose** the rewritten message in your reply and let the user
      run the rebase themselves.
 
@@ -163,6 +164,7 @@ The comments file is at `.revue/comments.json` (relative to git repo root). Each
   "head": "HEAD",
   "side": "right",
   "branch": "feature/null-checks",
+  "commit": "9f1c2b7d4e5a6b8c0d1e2f3a4b5c6d7e8f901234",
   "body": "Should this ever return null? Seems risky.",
   "author": "user",
   "created": "2024-01-15T10:30:00+00:00",
@@ -179,6 +181,36 @@ The comments file is at `.revue/comments.json` (relative to git repo root). Each
 ```
 
 The `branch` field captures the git branch the user was checked out on when they wrote the comment. It may be missing for legacy comments or comments authored in a detached-HEAD state — treat missing as "applies to all branches".
+
+### The `commit` field
+
+`commit` is the full sha of the newest commit in the range the user was reviewing when
+they wrote the comment — or `"working"` when the range held no commits, meaning they
+were commenting on uncommitted changes. For a comment on a commit message it is that
+commit's own sha. It may be missing on legacy comments.
+
+Two things it buys you:
+
+- **It anchors the comment.** `line` drifts as code moves, and even `lineContent` can
+  become ambiguous. `git show <commit>:<file>` gives you the file exactly as it was when
+  the comment was written, so you can always recover what the user was looking at.
+- **It scopes the review.** The UI only shows comments anchored to commits in the range
+  on screen (a *Show all commits* toggle lifts that, mirroring *Show resolved*), so
+  picking a single commit shows only the feedback written against it.
+
+**If you rewrite history, repoint the comments.** After a rebase, amend, squash or
+cherry-pick, the old shas are no longer in the range and every comment anchored to them
+disappears from the UI. You are the only one who knows how the commits map, so say so:
+
+```bash
+curl -sS -X POST "http://127.0.0.1:7878/api/comments/remap-commits?repo=<url-encoded-repo-root>" \
+  -H "Content-Type: application/json" \
+  -d '{"<old-sha>":"<new-sha>","<old-sha-2>":"<new-sha-2>"}'
+```
+
+Short shas are fine on both sides. This also rewrites the `revue::commit::<sha>` paths of
+comments on commit messages, so those follow their commit too. Do it as part of the rebase,
+not as a follow-up the user has to ask for.
 
 ### Replying to Comments
 
@@ -343,6 +375,7 @@ Never create or edit a PR just because a draft exists — the draft is a proposa
 - **Don't resolve comments yourself** — reply, and leave resolving to the user, who resolves
   once they've checked the work.
 - **Filter to the current branch**: only consider comments whose `branch` matches the current git branch (`git rev-parse --abbrev-ref HEAD`), or has no `branch` field. Comments from other branches are stale review artifacts left over from when the user was checked out elsewhere.
+- **Repoint comments after rewriting history**: a rebase, amend or squash orphans every comment anchored to an old sha. Call `POST /api/comments/remap-commits` with the old→new mapping as part of the rewrite.
 - The `.revue/` directory is gitignored — comments are local only
 - Comments are tied to a specific `base`/`head` diff range; mention this context when relevant
 - When replying, always use `author: "copilot"` so the UI distinguishes user vs Copilot comments

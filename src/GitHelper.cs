@@ -197,6 +197,50 @@ public static class GitHelper
     public const string PrFilePath = "revue::pr::draft";
 
     /// <summary>
+    /// Recorded as a comment's commit when it was made against uncommitted work,
+    /// where no commit contains the line being discussed.
+    /// </summary>
+    public const string WorkingTreeCommit = "working";
+
+    /// <summary>
+    /// The commit a comment is anchored to: the tip of the range being reviewed,
+    /// or the commit itself when the comment targets a commit message. Line
+    /// numbers drift as history is rewritten, so this is what lets a reader
+    /// recover the exact text a comment was written against
+    /// (<c>git show &lt;commit&gt;:&lt;file&gt;</c>).
+    /// </summary>
+    public static string? ResolveCommentCommit(string file, string @base, string head, string repoRoot)
+    {
+        if (file.StartsWith(CommitFilePrefix, StringComparison.Ordinal))
+            return file[CommitFilePrefix.Length..];
+
+        try
+        {
+            // Anchor to the newest commit in the range under review, so the sha
+            // is always one the range actually contains. A range with no commits
+            // (base == head, or nothing committed on the branch yet) is a pure
+            // working-tree review: no commit holds the line.
+            var sha = RunGit(["rev-list", "-1", $"{@base}..{head}"], repoRoot).Trim();
+            return string.IsNullOrEmpty(sha) ? WorkingTreeCommit : sha;
+        }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// Expands a possibly-abbreviated sha to its full form, falling back to the
+    /// input when git can't resolve it.
+    /// </summary>
+    public static string ExpandSha(string sha, string repoRoot)
+    {
+        try
+        {
+            var full = RunGit(["rev-parse", "--verify", $"{sha}^{{commit}}"], repoRoot).Trim();
+            return string.IsNullOrEmpty(full) ? sha : full;
+        }
+        catch { return sha; }
+    }
+
+    /// <summary>
     /// Builds the virtual diff file for the draft PR description: title on line
     /// 1, blank line 2, body from line 3, matching how commit messages are laid
     /// out so comment line numbers mean the same thing in both. Returns null

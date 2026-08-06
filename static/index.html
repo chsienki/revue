@@ -947,6 +947,10 @@
         <label for="setting-all-branches">Show comments from all branches</label>
       </div>
       <div class="settings-item">
+        <input type="checkbox" id="setting-all-commits" />
+        <label for="setting-all-commits">Show comments from all commits</label>
+      </div>
+      <div class="settings-item">
         <input type="checkbox" id="setting-show-commits" />
         <label for="setting-show-commits">Show commit messages</label>
       </div>
@@ -998,6 +1002,11 @@
       <label for="show-all-branches">Show all branches</label>
       <span id="other-branches-count" class="other-branches-count"></span>
     </div>
+    <div class="show-resolved-wrap" id="other-commits-wrap" style="display:none">
+      <input type="checkbox" id="show-all-commits" />
+      <label for="show-all-commits">Show all commits</label>
+      <span id="other-commits-count" class="other-branches-count"></span>
+    </div>
     <div id="agent-panel">
       <div id="agent-status"><span class="agent-dot"></span><span id="agent-status-text">Copilot</span></div>
       <textarea id="agent-note" rows="2" placeholder="Optional: extra instructions for Copilot…"></textarea>
@@ -1032,6 +1041,8 @@ let state = {
   fileContext: {},  // file -> context line count (default 5)
   currentBranch: null,    // git branch we're checked out on (null = detached HEAD)
   showAllBranches: false, // when true, show comments from all branches
+  showAllCommits: false,  // when true, show comments anchored to commits outside the viewed range
+  rangeCommits: new Set(),// full shas of the commits in the diff currently on screen
   windowSize: 10,         // max files mounted at once (0 = render all)
   windowStart: 0,         // index into state.files for first rendered file
   collapsedFolders: new Set(),
@@ -1178,6 +1189,7 @@ state.showCommitMessages = loadPref('showCommitMessages', 'true') === 'true';
 state.showPrMessage = loadPref('showPrMessage', 'true') === 'true';
 state.theme = loadPref('theme', 'auto');
 state.showAllBranches = loadPref('showAllBranches', 'false') === 'true';
+state.showAllCommits = loadPref('showAllCommits', 'false') === 'true';
 state.wrappedFiles = new Set(loadPref('wrappedFiles', '').split('\n').filter(Boolean));
 state.viewedFiles = new Set(loadPref('viewedFiles', '').split('\n').filter(Boolean));
 const _ws = parseInt(loadPref('windowSize', '10'), 10);
@@ -1236,6 +1248,7 @@ async function reloadComments() {
   state.comments = await api('/api/comments');
   if (window.resetCommentsBaseline) window.resetCommentsBaseline();
   updateOtherBranchesUI();
+  updateOtherCommitsUI();
   renderAgentPanel();
 }
 
@@ -1255,6 +1268,7 @@ async function applyLiveComments() {
   if (commentEditorOpen()) { state.commentsDirty = true; return; }
   state.commentsDirty = false;
   updateOtherBranchesUI();
+  updateOtherCommitsUI();
   renderFileList();
   await renderAllDiffs();
   // Badge counts come from the injectable-id set that renderAllDiffs computes,
@@ -1289,6 +1303,28 @@ function branchVisible(c) {
   return c.branch === state.currentBranch;
 }
 
+// Recorded on comments written against work that isn't in any commit yet.
+const WORKING_TREE_COMMIT = 'working';
+
+// Comment belongs to the range currently on screen when:
+//   - it has no commit (legacy, or git couldn't resolve one)
+//   - it's on the PR description, which describes the branch rather than a commit
+//   - it was written against uncommitted work and the view still includes the working tree
+//   - the commit it's anchored to is one of the commits on screen
+function commitInView(c) {
+  if (!c.commit) return true;
+  if (isPrFile(c.file)) return true;
+  if (c.commit === WORKING_TREE_COMMIT) return state.head === 'HEAD';
+  return state.rangeCommits.has(c.commit);
+}
+
+function commitVisible(c) { return state.showAllCommits || commitInView(c); }
+
+// The two review-context filters. Everything that lists comments goes through
+// this so the file-tree badges, the diff, the orphaned section and the agent
+// hand-off can't disagree about what the user is looking at.
+function commentVisible(c) { return branchVisible(c) && commitVisible(c); }
+
 // Show a count + the toggle row whenever there are comments hidden by the branch filter.
 function updateOtherBranchesUI() {
   const wrap = document.getElementById('other-branches-wrap');
@@ -1303,6 +1339,20 @@ function updateOtherBranchesUI() {
   countEl.textContent = otherCount > 0 ? `${otherCount} on other branches` : '';
 }
 
+// Same idea for the commit filter: comments anchored to a commit outside the
+// range on screen are hidden, so say how many and offer the way back.
+function updateOtherCommitsUI() {
+  const wrap = document.getElementById('other-commits-wrap');
+  const countEl = document.getElementById('other-commits-count');
+  if (!wrap || !countEl) return;
+  const cb = document.getElementById('show-all-commits');
+  if (cb) cb.checked = state.showAllCommits;
+  const otherCount = state.comments.filter(c => branchVisible(c) && !commitInView(c)).length;
+  if (otherCount === 0 && !state.showAllCommits) { wrap.style.display = 'none'; return; }
+  wrap.style.display = '';
+  countEl.textContent = otherCount > 0 ? `${otherCount} on other commits` : '';
+}
+
 // ── Agent hand-off ─────────────────────────────────────────────────────────
 //
 // "These comments are ready to address": the browser queues a request that the
@@ -1312,7 +1362,7 @@ function updateOtherBranchesUI() {
 
 // The comments a Send would cover: unresolved and visible under the branch filter.
 function agentCandidateComments() {
-  return state.comments.filter(c => !c.resolved).filter(branchVisible);
+  return state.comments.filter(c => !c.resolved).filter(commentVisible);
 }
 
 function renderAgentPanel() {
@@ -1826,6 +1876,20 @@ async function init() {
   document.getElementById('show-all-branches').addEventListener('change', e => applyBranchFilterChange(e.target.checked));
   document.getElementById('setting-all-branches').addEventListener('change', e => applyBranchFilterChange(e.target.checked));
 
+  // Commit filter — same two-places-in-sync arrangement as the branch filter.
+  function applyCommitFilterChange(checked) {
+    state.showAllCommits = checked;
+    savePref('showAllCommits', state.showAllCommits);
+    document.getElementById('show-all-commits').checked = checked;
+    document.getElementById('setting-all-commits').checked = checked;
+    updateOtherCommitsUI();
+    renderFileList();
+    renderAllDiffs();
+    renderAgentPanel();
+  }
+  document.getElementById('show-all-commits').addEventListener('change', e => applyCommitFilterChange(e.target.checked));
+  document.getElementById('setting-all-commits').addEventListener('change', e => applyCommitFilterChange(e.target.checked));
+
   document.getElementById('agent-send').addEventListener('click', sendToAgent);
   document.getElementById('agent-cancel').addEventListener('click', cancelAgentRequest);
   document.getElementById('agent-redraft').addEventListener('click', () => requestPrDraft(''));
@@ -1858,9 +1922,12 @@ async function init() {
   document.getElementById('show-resolved').checked = state.showResolved;
   document.getElementById('show-all-branches').checked = state.showAllBranches;
   document.getElementById('setting-all-branches').checked = state.showAllBranches;
+  document.getElementById('show-all-commits').checked = state.showAllCommits;
+  document.getElementById('setting-all-commits').checked = state.showAllCommits;
   const showCommitsCheck = document.getElementById('setting-show-commits');
   showCommitsCheck.checked = state.showCommitMessages;
   updateOtherBranchesUI();
+  updateOtherCommitsUI();
 
   wsCheck.addEventListener('change', () => {
     state.ignoreWhitespace = wsCheck.checked;
@@ -2008,6 +2075,7 @@ function setupFilelistResize() {
       if (branchChanged) {
         state.commentsDirty = false;
         updateOtherBranchesUI();
+        updateOtherCommitsUI();
         renderFileList();
         renderAllDiffs();
       } else if (commentsChanged || state.commentsDirty) {
@@ -2083,10 +2151,15 @@ async function loadFiles() {
     // (any comments on hidden commits fall through to the "Other comments"
     // orphaned section so they're never silently lost).
     let files = await api(`/api/diff?base=${encodeURIComponent(state.base)}&head=${encodeURIComponent(state.head)}&ignoreWhitespace=${state.ignoreWhitespace}`);
+    // The commit-sentinel entries are the range's commit list, so take the shas
+    // for the comment filter before the user's display preference can drop them.
+    state.rangeCommits = new Set(files.filter(f => isCommitFile(f.file)).map(f => f.file.slice(COMMIT_FILE_PREFIX.length)));
     if (!state.showCommitMessages) files = files.filter(f => !isCommitFile(f.file));
     if (!state.showPrMessage) files = files.filter(f => !isPrFile(f.file));
     state.files = files;
     sortFilesTreeOrder(state.files);
+    // The commit filter is scoped to the range that just loaded.
+    updateOtherCommitsUI();
   } catch(e) {
     state.files = [];
     document.getElementById('diffview-content').innerHTML = `<div id="diffview-placeholder">Error: ${e.message}</div>`;
@@ -2108,7 +2181,8 @@ async function loadFiles() {
 
 // Files representing a commit message are flagged by the server with a sentinel
 // path prefix. The colons are illegal in Windows paths so this never collides.
-function isCommitFile(file) { return typeof file === 'string' && file.startsWith('revue::commit::'); }
+const COMMIT_FILE_PREFIX = 'revue::commit::';
+function isCommitFile(file) { return typeof file === 'string' && file.startsWith(COMMIT_FILE_PREFIX); }
 
 // The draft PR description rides the same virtual-file pipeline as commit messages.
 const PR_FILE = 'revue::pr::draft';
@@ -2147,7 +2221,7 @@ function sortFilesTreeOrder(files) {
 
 function commentsForFile(file) {
   const ids = state._globallyInjectableIds;
-  return state.comments.filter(c => c.file === file && (state.showResolved || !c.resolved) && branchVisible(c) && (!ids || ids.has(c.id)));
+  return state.comments.filter(c => c.file === file && (state.showResolved || !c.resolved) && commentVisible(c) && (!ids || ids.has(c.id)));
 }
 
 function commentCountForFile(file) {
@@ -2366,7 +2440,7 @@ function renderFileList() {
 
 function renderOrphanedTreeEntry(el) {
   const ids = state._globallyInjectableIds;
-  const orphanedForTree = state.comments.filter(c => (state.showResolved || !c.resolved) && branchVisible(c) && (!ids || !ids.has(c.id)));
+  const orphanedForTree = state.comments.filter(c => (state.showResolved || !c.resolved) && commentVisible(c) && (!ids || !ids.has(c.id)));
   if (!orphanedForTree.length) return;
   const div = document.createElement('div');
   div.className = 'file-item orphaned-file-item' + (state.currentFile === '__orphaned__' ? ' active' : '');
@@ -2714,7 +2788,7 @@ async function renderAllDiffs(opts) {
   // Orphaned set is computed against the global injectable set so files that
   // are merely out-of-window aren't flagged as orphaned.
   const globalIds = state._globallyInjectableIds;
-  const visibleComments = state.comments.filter(c => (state.showResolved || !c.resolved) && branchVisible(c));
+  const visibleComments = state.comments.filter(c => (state.showResolved || !c.resolved) && commentVisible(c));
   const orphaned = visibleComments.filter(c => !globalIds.has(c.id));
 
   // The orphaned section only mounts when the window includes the end of the
@@ -2873,7 +2947,7 @@ function injectComments(file, patch, container) {
   state.comments
     .filter(c => c.file === file)
     .filter(c => state.showResolved || !c.resolved)
-    .filter(c => branchVisible(c))
+    .filter(c => branchVisible(c) && commitVisible(c))
     .forEach(c => {
       const lineMap = c.side === 'left' ? oldLineMap : newLineMap;
       const relocated = relocateComment(c, lineMap);
@@ -2987,8 +3061,13 @@ function renderCommentItem(container, c, file, { orphaned = false } = {}) {
   // that way "show all branches" mode (and any rare case where stale comments sneak through) is obvious.
   const showBadge = c.branch && c.branch !== state.currentBranch;
   const branchBadge = showBadge ? ` <span class="revue-branch-badge" title="Created on branch ${escHtml(c.branch)}">${escHtml(c.branch)}</span>` : '';
+  // Likewise for the commit: a comment showing through the "all commits" filter
+  // was written against code that isn't on screen, so say which commit it was.
+  const commitBadge = commitInView(c) ? '' : (c.commit === WORKING_TREE_COMMIT
+    ? ` <span class="revue-branch-badge" title="Written against uncommitted changes">working tree</span>`
+    : ` <span class="revue-branch-badge" title="Written against commit ${escHtml(c.commit)}">${escHtml(c.commit.slice(0, 8))}</span>`);
   div.innerHTML = `
-    <div class="revue-comment-author">${escHtml(authorLabel)}${branchBadge}</div>
+    <div class="revue-comment-author">${escHtml(authorLabel)}${branchBadge}${commitBadge}</div>
     <div class="revue-comment-body">${escHtml(c.body)}</div>
     <div class="revue-comment-meta">
       <span>Line ${c._displayLine || c.line}${driftLabel}</span>

@@ -152,6 +152,9 @@ where the text comes from differ. When touching one of the two, check the other:
 - Comments support threaded `replies` — each reply has `id`, `author`, `body`, `created`
 - Comments are side-aware: stored with `side: "left"` (old) or `"right"` (new) and only rendered on the matching panel
 - Comments are **branch-aware**: stored with `branch` set to `git rev-parse --abbrev-ref HEAD` at creation time. The UI hides comments from other branches by default (since `.revue/comments.json` is local-only and survives branch switches). A "Show all branches" toggle in the filelist footer / settings panel reveals them with a branch badge. Legacy comments without a `branch` field are always shown.
+- Comments are **commit-anchored**: `commit` holds the full sha of the newest commit in the range they were written against (`GitHelper.ResolveCommentCommit`), or the sentinel `"working"` when that range had no commits (uncommitted work). A comment on a commit message anchors to that commit's own sha. This does two jobs: the UI scopes comments to the commits on screen (`commitInView` / `state.rangeCommits`, lifted by the "Show all commits" toggle), and the anchor survives line drift — `git show <commit>:<file>` recovers the exact text the user was looking at. Anchoring to the newest *in-range* commit rather than `rev-parse HEAD` is deliberate: the recorded sha is then always a member of the range, so the filter can't hide a comment the moment it's written.
+- `state.rangeCommits` is derived from the commit-sentinel entries in the `/api/diff` response, captured **before** the `showCommitMessages` preference filters them out — otherwise hiding commit messages would silently hide every comment too.
+- Rewriting history orphans comments anchored to the old shas, so `POST /api/comments/remap-commits` takes an old→new sha map (prefix-matched, so short shas work) and moves both `commit` and any `revue::commit::<sha>` file path. The skill calls it as part of any rebase/amend.
 - The current branch is exposed via `/api/config` (initial load) and `/api/current-branch` (polled every 5s) so live `git checkout` in another terminal updates the filter automatically.
 - In SxS mode, inserting a comment row on one side also inserts a spacer row on the opposite side, with a `ResizeObserver` to keep heights in sync
 - `renderAllDiffs()` saves/restores `#diffview` scroll position so comment actions don't jump to top
@@ -232,10 +235,11 @@ The native `<label class="d2h-file-collapse"><input class="d2h-file-collapse-inp
 - `state.rangeStart`/`state.rangeEnd` track commit range selection. Stored normalized to `rangeStart = older`, `rangeEnd = newer` so derivation and URL serialization are deterministic.
 - `state.files` is the **complete** ordered list returned by `/api/diff` -- commit-sentinel files (when `state.showCommitMessages` is true) followed by real files. Treat it as the single source of truth; downstream code (`renderFileList`, `renderAllDiffs`, `computeGloballyInjectableIds`, `commentCountForFile`) handles commits and real files uniformly except where cosmetics differ.
 - `state.currentBranch` is the live git branch (or `null` when detached HEAD); `state.showAllBranches` toggles the branch filter
+- `state.rangeCommits` is the set of full shas in the diff on screen; `state.showAllCommits` toggles the commit filter. `commentVisible()` is the single gate both filters go through, so the tree badges, the diff, the orphaned section and the agent hand-off can't disagree about what's in scope.
 - `state.agent` is the last `/api/agent/status` snapshot (`attached`, `waiters`, `pending`, `queued`, `active`, `last`) driving the "Send to Copilot" panel; `state.commentsDirty` defers a live comment refresh while the user is mid-edit. Neither is persisted — both are session state, not review context.
 - `state.version` is the version of the server this page loaded from, and `state.restarting` suppresses polling while a restart is in flight. A poll that reports a different `version` means the frontend is stale, so the page reloads.
 - Branch selector changes reset both log and diff state plus the range
-- User preferences (`ignoreWhitespace`, `diffLayout`, `showResolved`, `showCommitMessages`, `showPrMessage`, `theme`, `showAllBranches`) are persisted as cookies via `savePref()`/`loadPref()`
+- User preferences (`ignoreWhitespace`, `diffLayout`, `showResolved`, `showCommitMessages`, `showPrMessage`, `theme`, `showAllBranches`, `showAllCommits`) are persisted as cookies via `savePref()`/`loadPref()`
 - Per-wrapper state (`wrappedFiles`, `viewedFiles`) is a `Set` persisted as a newline-separated cookie. Both file paths and commit-message sentinels (`revue::commit::<sha>`) coexist in `viewedFiles`.
 
 ## URL hash state
@@ -251,7 +255,7 @@ The `location.hash` carries the **per-review** context so a refresh restores it,
 - `range` is optional; when present it overrides the branch context to scope the diff to a single commit (`<sha>`), a commit range (`<older>..<newer>`, normalized via `state.commits` ordering when written), or working-tree-only changes (`~working~`). Resolved `state.base`/`state.head` are then derived from `range`, leaving the branch context intact for "clear range" / back-navigation.
 - `file` is the currently selected file; sentinels (`revue::commit::<sha>`) and real paths both fit. Restored after `loadFiles()` via `jumpToFile()`.
 
-**What's *not* in the hash:** personal display preferences (`theme`, `diffLayout`, `ignoreWhitespace`, `showResolved`, `showAllBranches`, `showCommitMessages`, `windowSize`) and per-user file state (`wrappedFiles`, `viewedFiles`) stay in cookies. A deeplink shouldn't impose the sender's preferences on the recipient.
+**What's *not* in the hash:** personal display preferences (`theme`, `diffLayout`, `ignoreWhitespace`, `showResolved`, `showAllBranches`, `showAllCommits`, `showCommitMessages`, `windowSize`) and per-user file state (`wrappedFiles`, `viewedFiles`) stay in cookies. A deeplink shouldn't impose the sender's preferences on the recipient.
 
 **History strategy:**
 - `pushState` for context switches (base/head selector change, commit-range selection / clear) -- earn a back-button entry.
@@ -271,6 +275,7 @@ The `location.hash` carries the **per-review** context so a refresh restores it,
   "head": "HEAD",
   "side": "right",
   "branch": "feature/foo",
+  "commit": "9f1c2b7d4e5a6b8c0d1e2f3a4b5c6d7e8f901234",
   "body": "Why is this needed?",
   "author": "user",
   "created": "2026-04-02T00:00:00Z",
@@ -287,6 +292,8 @@ The `location.hash` carries the **per-review** context so a refresh restores it,
 ```
 
 For commit-message comments, `file` is the sentinel `revue::commit::<full-sha>`, `side` is always `"right"`, and `line` indexes into the rendered commit message (subject = 1, blank = 2, body lines = 3+).
+
+`commit` is the sha the comment is anchored to, or `"working"` for uncommitted work. Missing on legacy comments, which are shown regardless of the selected range.
 
 ## API endpoints
 
@@ -321,6 +328,7 @@ and are unaffected.
 - `POST /api/comments?repo=X` → accepts `CommentRequest` (include `author`), returns `Comment`
 - `POST /api/comments/{id}/replies?repo=X` → accepts `{ author, body }`, returns `Reply` (repo optional: falls back to searching all stores for the id)
 - `DELETE /api/comments/{id}?repo=X` → 200 or 404 (repo optional: searches all stores)
+- `POST /api/comments/remap-commits?repo=X` → accepts `{ "<old-sha>": "<new-sha>", … }`, repoints comment anchors (and `revue::commit::` paths) after a history rewrite, returns `{ updated }`
 - `POST /api/agent/requests?repo=X` → accepts `{ note, commentIds, kind }` (omit `commentIds` for "everything unresolved on this branch"; `kind` is `"comments"` (default) or `"pr-draft"`), returns the queued `AgentRequest`
 - `GET /api/agent/wait?repo=X&timeout=N` → long-poll (N clamped to 1–3600s): `{ request, comments, prDraft, commits, base, head, repo, timedOut: false }` once claimed, `{ timedOut: true, repo }` on expiry, or `{ restarting: true, port, version, repo }` when the server is switching versions. `comments` is the hydrated `Comment[]` so the caller needn't read `comments.json`.
 - `POST /api/agent/requests/{id}/complete` → accepts `{ summary }`, returns the completed `AgentRequest` (no repo param — id is globally unique)
