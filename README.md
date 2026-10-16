@@ -84,6 +84,11 @@ Copilot reads your unresolved comments and responds to each one — answering qu
 
 You can also say `launch revue` from Copilot CLI to start the server without leaving the terminal.
 
+While connected, use **Send to Copilot** in revue to send another round of comments.
+Copilot automatically disconnects after 30 minutes without a request; each received request
+starts a fresh 30-minute wait. revue stays running, and you can ask Copilot to reconnect
+when you're ready to continue.
+
 ## Comments
 
 Comments are stored in `.revue/comments.json` at the repo root. This file is automatically added to `.git/info/exclude` (local-only, never committed).

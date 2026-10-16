@@ -784,7 +784,7 @@ app.MapGet("/api/agent/wait", async (string? repo, string? @base, string? head, 
     var r = registry.Resolve(repo);
     if (r is null) return Results.Problem("No repository registered");
 
-    var seconds = Math.Clamp(timeout ?? 3600, 1, 3600);
+    var seconds = Math.Clamp(timeout ?? 1800, 1, 1800);
     AgentWaitResult result;
     try { result = await agentQueue.WaitAsync(r.Path, TimeSpan.FromSeconds(seconds), ctx.RequestAborted); }
     catch (OperationCanceledException) { return Results.Empty; }

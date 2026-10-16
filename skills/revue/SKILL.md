@@ -251,7 +251,7 @@ command and then carry on / end your turn. Do not run it in the foreground and d
 wait on it synchronously.
 
 ```bash
-curl -sS --max-time 3660 "http://127.0.0.1:7878/api/agent/wait?repo=<url-encoded-repo-root>&timeout=3600"
+curl -sS --max-time 1860 "http://127.0.0.1:7878/api/agent/wait?repo=<url-encoded-repo-root>&timeout=1800"
 ```
 
 - Use the port revue actually picked (7878 unless it was busy).
@@ -259,7 +259,8 @@ curl -sS --max-time 3660 "http://127.0.0.1:7878/api/agent/wait?repo=<url-encoded
   `Invoke-WebRequest` and won't understand these flags.
 - `repo` is the git root you launched; the queue is per-repo. If you're reviewing several
   repos in one instance, arm one waiter per repo.
-- The call blocks for up to an hour and costs nothing while it waits.
+- The call blocks for up to 30 minutes and costs nothing while it waits. Each claimed
+  request starts a fresh 30-minute wait; status polling does not count as activity.
 - While it's armed, the UI shows a green **Copilot attached** dot, so the user knows the
   button will actually reach someone.
 
@@ -269,7 +270,7 @@ When the background command finishes, look at what it printed:
 
 | Response | What it means | What to do |
 |---|---|---|
-| `{"timedOut":true,...}` | Nobody clicked within the hour. | Silently arm a new waiter. Don't narrate it. |
+| `{"timedOut":true,...}` | No request arrived within 30 minutes. | Disconnect: do not re-arm, ping, or schedule another wait. Briefly tell the user Copilot disconnected due to inactivity; leave revue running. Wait for the user to explicitly ask to reconnect. |
 | `{"request":{...},"comments":[...]}` | The user hit Send, or a draft was auto-queued. | Arm a fresh waiter, then address the round (below). Check `request.kind`: `"pr-draft"` means redraft the PR description only (Capability 4), `"comments"` means the usual. |
 | `{"restarting":true,"port":N}` | revue is switching to a newly installed version. | Wait for `GET /api/ping` on that port to answer again (poll ~1s apart for up to 30s), then arm a new waiter. Not an exit. |
 | Empty output / `connection refused` | Either revue exited, or a restart dropped the socket before it could answer. | Ping `/api/ping` a few times over ~10s. If it answers, arm a new waiter; if not, revue is gone — don't re-arm, and mention it only if the user is waiting on it. |
@@ -311,17 +312,16 @@ For a real request:
 ### Don't leave the session unattended
 
 The whole point is that the user never has to come back to the terminal. That only holds
-while a waiter is armed, so treat "there is always exactly one waiter armed" as the
-invariant:
+while a waiter is armed, so keep a waiter armed until the 30-minute idle timeout:
 
-- Arm one at launch, and a fresh one the instant each wake-up arrives — **before** the work,
+- Arm one at launch, and a fresh one the instant each request arrives — **before** the work,
   not after.
-- A `timedOut` response, a restart signal, or a round you just finished all mean the same
-  thing: there is no waiter now. Arm one.
-- Never end a turn without a waiter armed while revue is still running. If you're unsure,
+- A restart signal means there is no waiter now. Reconnect and arm one.
+- While connected, never end a turn without a waiter armed. If you're unsure,
   `GET /api/agent/status?repo=…` and check `attached` is true.
-- The one case where you *don't* re-arm is revue actually being gone (`/api/ping` stops
-  answering).
+- Do not re-arm after `timedOut`, even if revue is still running, or when revue is gone
+  (`/api/ping` stops answering). Finishing a round is not a reason to override an idle
+  disconnect. Only an explicit user request reconnects an idle session.
 
 ### Do the round in the foreground
 

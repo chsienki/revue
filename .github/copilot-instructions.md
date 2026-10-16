@@ -174,10 +174,12 @@ back to the terminal to say "address my comments".
   Deliberately in-memory: a request only means anything while both this server and the CLI
   session that launched it are alive.
 - **The handshake.** The browser `POST`s a request; a session claims it by long-polling
-  `GET /api/agent/wait` (up to 1h). Because the Copilot CLI notifies its agent when a
+  `GET /api/agent/wait` (up to 30 minutes). Because the Copilot CLI notifies its agent when a
   background shell command finishes, a blocking `curl` is an event-driven wake-up that costs
   nothing while idle. The agent replies to the comments, `POST`s `.../complete` with a
-  one-line summary, and re-arms.
+  one-line summary, and re-arms. Each claimed request starts a fresh wait. An idle
+  `timedOut` response ends the attachment: the skill must not re-arm until the user
+  explicitly asks to reconnect. UI status polling does not extend the wait.
 - **`WaitAsync` honours `HttpContext.RequestAborted`** so an abandoned curl doesn't leave a
   phantom waiter inflating the "Copilot attached" indicator.
 - **Requests queue before anyone attaches** — clicking Send with no session running leaves a
@@ -343,7 +345,7 @@ and are unaffected.
 - `POST /api/comments/remap-commits?repo=X` → accepts `{ "<old-sha>": "<new-sha>", … }`, repoints comment anchors (and `revue::commit::` paths) after a history rewrite, returns `{ updated }`. Also records the mapping in `CommitRemapLog` so open tabs can follow the rewrite.
 - `GET /api/commit-remap?repo=X&sha=Y` → `{ sha }` — where a rewritten commit ended up, or `null` if it was never rewritten
 - `POST /api/agent/requests?repo=X` → accepts `{ note, commentIds, kind }` (omit `commentIds` for "everything unresolved on this branch"; `kind` is `"comments"` (default) or `"pr-draft"`), returns the queued `AgentRequest`
-- `GET /api/agent/wait?repo=X&timeout=N` → long-poll (N clamped to 1–3600s): `{ request, comments, prDraft, commits, base, head, repo, timedOut: false }` once claimed, `{ timedOut: true, repo }` on expiry, or `{ restarting: true, port, version, repo }` when the server is switching versions. `comments` is the hydrated `Comment[]` so the caller needn't read `comments.json`.
+- `GET /api/agent/wait?repo=X&timeout=N` → long-poll (defaults to 1800s; N clamped to 1–1800s): `{ request, comments, prDraft, commits, base, head, repo, timedOut: false }` once claimed, `{ timedOut: true, repo }` on expiry, or `{ restarting: true, port, version, repo }` when the server is switching versions. `comments` is the hydrated `Comment[]` so the caller needn't read `comments.json`. An idle expiry disconnects Copilot; it does not stop revue.
 - `POST /api/agent/requests/{id}/complete` → accepts `{ summary }`, returns the completed `AgentRequest` (no repo param — id is globally unique)
 - `DELETE /api/agent/requests/{id}` → 200 or 404 (drops a stuck round)
 - `GET /api/agent/status?repo=X` → `AgentStatusInfo` `{ attached, waiters, pending, queued, active, last }`
